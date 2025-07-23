@@ -19,7 +19,6 @@ with open(OUTPUT_FILE, 'w') as f:
     pass # This empties the file
 
 # --- Load Data ---
-
 with open('filtered_fever_with_wiki_updated.jsonl', 'r') as f:
     fever_data = [json.loads(line) for line in f.readlines()[:5]] # Using 5 for testing
 

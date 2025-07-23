@@ -2,8 +2,7 @@ import json
 import re
 from retriever import retrieve_best_passage, fetch_wikipedia_page
 from question_generation import load_openai_key, generate_questions
-from verification3 import verify_question_v3  # <-- Use the new verification file
-from verification2 import evaluate_question_naturalness  # Keep for naturalness scoring
+from verification3 import verify_question_v3, evaluate_question_naturalness  # <-- Use the new verification file
 from tqdm import tqdm
 from langchain_openai import ChatOpenAI
 import os
@@ -190,7 +189,9 @@ count_no_passage = 0
 count_error = 0
 total_questions = 0
 total_naturalness_score = 0
-scored_questions = 0
+scored_naturalness_questions = 0
+total_objectivity_score = 0
+scored_objectivity_questions = 0
 
 with open(OUTPUT_FILE, 'r') as f:
     for line in f:
@@ -211,19 +212,30 @@ with open(OUTPUT_FILE, 'r') as f:
             # Calculate average naturalness score
             if q.get("naturalness_score") is not None:
                 total_naturalness_score += q["naturalness_score"]
-                scored_questions += 1
+                scored_naturalness_questions += 1
+
+            # Calculate average objectivity score
+
+            if q.get("objectivity_score") is not None:
+                total_objectivity_score += q["objectivity_score"]
+                scored_objectivity_questions += 1
 
 if total_questions == 0:
     print("\nNo questions were processed!")
     exit()
 
-average_naturalness = total_naturalness_score / scored_questions if scored_questions > 0 else 0
+average_naturalness = total_naturalness_score / scored_naturalness_questions if scored_naturalness_questions > 0 else 0
+average_objectivity = total_objectivity_score / scored_objectivity_questions if scored_objectivity_questions > 0 else 0
 
 print("\n\n--- FINAL METRICS ---")
 print(f"Total Questions Processed: {total_questions}")
-print(f"✅ Needs Both Passages: {count_2_passage} ({(count_2_passage / total_questions) * 100:.2f}%)")
-print(f"➡️  Only Passage A: {count_A_passage} ({(count_A_passage / total_questions) * 100:.2f}%)")
-print(f"➡️  Only Passage B: {count_B_passage} ({(count_B_passage / total_questions) * 100:.2f}%)")
-print(f"❌ Not Answerable / General Knowledge: {count_no_passage} ({(count_no_passage / total_questions) * 100:.2f}%)")
-print(f"⚠️ Errors: {count_error} ({(count_error / total_questions) * 100:.2f}%)")
+print(f"✅ Needs Both Passages: {count_2_passage} ({(count_2_passage/total_questions)*100:.2f}%)")
+print(f"➡️  Only Passage A: {count_A_passage} ({(count_A_passage/total_questions)*100:.2f}%)")
+print(f"➡️  Only Passage B: {count_B_passage} ({(count_B_passage/total_questions)*100:.2f}%)")
+print(f"❌ Not Answerable / General Knowledge: {count_no_passage} ({(count_no_passage/total_questions)*100:.2f}%)")
+print(f"⚠️ Errors: {count_error} ({(count_error/total_questions)*100:.2f}%)")
+print("-" * 25)
 print(f"🌿 Average Naturalness Score: {average_naturalness:.2f} / 5.0")
+print(f"🎯 Average Objectivity Score: {average_objectivity:.2f} / 5.0")
+
+
