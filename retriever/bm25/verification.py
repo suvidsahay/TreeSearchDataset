@@ -1,63 +1,55 @@
 from langchain_openai import ChatOpenAI
-from langchain.schema import HumanMessage
+from langchain.schema import HumanMessage, SystemMessage
 import json
 import os
+import re
 
 def verify_question(documents, question):
-    doc_prompt = f"""
-Passage A:
-{documents[0]}
+    doc_prompt = f"Passage A:\n{documents[0]}\n\nPassage B:\n{documents[1]}\n"
 
-Passage B:
-{documents[1]}
-"""
+    # System message for stricter output
+    system_msg = SystemMessage(content=(
+        "You are an AI verifier. Respond ONLY with valid JSON in the format specified. "
+        "No extra text, no explanation, no markdown. Use lowercase booleans."
+    ))
 
-    VERIFICATION_PROMPT = f"""
-You are an AI verifier. Follow these instructions exactly:
-
-1. Determine:
-   - Correct_2_passage: true/false
-   - Correct_A_passage: true/false
-   - Correct_B_passage: true/false
-   - Correct_no_passage: true/false
-
-2. Provide the ground truth answer using ONLY the passages.
-   - If not answerable, respond: "Not answerable from passages."
-
-IMPORTANT:
-- Respond ONLY in valid JSON.
-- No extra text.
-- Use lowercase booleans.
-- Format:
+    # Short, explicit prompt
+    user_prompt = f"""
+Given the passages below, answer the following in JSON:
 
 {{
   "question": "{question}",
-  "Correct_2_passage": true/false,
-  "Correct_A_passage": true/false,
-  "Correct_B_passage": true/false,
-  "Correct_no_passage": true/false,
-  "answer": "<your answer>"
+    - Correct_2_passage: true if BOTH passages are required, false otherwise.
+    - Correct_A_passage: true if ONLY passage A is required, false otherwise.
+    - Correct_B_passage: true if ONLY passage B is required, false otherwise.
+    - Correct_no_passage: true if the question is answerable from common knowledge or NEITHER passage, false otherwise.
+  "answer": "<answer using ONLY the passages, or 'Not answerable from passages.'>"
 }}
-
-Process this:
 
 {doc_prompt}
 """
 
     chat = ChatOpenAI(
         temperature=0,
-        model_name="gpt-4o",
+        model_name="gpt-4o-mini",
         openai_api_key=os.getenv("OPENAI_API_KEY")
     )
 
-    response = chat.invoke([HumanMessage(content=VERIFICATION_PROMPT)])
+    response = chat.invoke([
+        system_msg,
+        HumanMessage(content=user_prompt)
+    ])
 
-    # Smart JSON extraction
+    # Robust JSON extraction
     try:
-        json_start = response.content.find('{')
-        json_data = response.content[json_start:]
-        result = json.loads(json_data)
-    except json.JSONDecodeError:
+        # Extract the first {...} block
+        match = re.search(r'\{.*\}', response.content, re.DOTALL)
+        if match:
+            json_data = match.group(0)
+            result = json.loads(json_data)
+        else:
+            raise ValueError("No JSON found")
+    except Exception:
         result = {
             "question": question,
             "Correct_2_passage": None,
