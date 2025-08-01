@@ -2,8 +2,7 @@ import json
 import re
 from retriever import retrieve_best_passage
 from question_generation import load_openai_key, generate_questions
-from verification3 import verify_question_v3 # <-- Use the new verification file
-from verification2 import evaluate_question_naturalness # Keep for naturalness scoring
+from verification3 import verify_question_v3, evaluate_question_naturalness # <-- Use the new verification file
 from tqdm import tqdm
 from langchain_openai import ChatOpenAI
 import os
@@ -97,21 +96,36 @@ for record in tqdm(fever_data):
         f_out.write('\n')
 
 
-# --- Metrics Calculation Section (will now be accurate) ---
+# --- Metrics Calculation Section ---
 count_2_passage = 0
 count_A_passage = 0
 count_B_passage = 0
 count_no_passage = 0
 count_error = 0
 total_questions = 0
-total_naturalness_score = 0
-scored_questions = 0
+naturalness_keys = [
+    "clear_single_question_score",
+    "combines_passages_score",
+    "requires_both_score",
+    "logical_dependency_score",
+    "hotpot_style_score",
+    "objectivity_score"
+]
+
+naturalness_totals = {k: 0 for k in naturalness_keys}
+naturalness_counts = {k: 0 for k in naturalness_keys}
+total_objectivity_score = 0
+scored_objectivity_questions = 0
 
 with open(OUTPUT_FILE, 'r') as f:
     for line in f:
         entry = json.loads(line)
         for q in entry["questions"]:
             total_questions += 1
+            for key in naturalness_keys:
+                if key in q and q[key] is not None:
+            	    naturalness_totals[key] += q[key]
+            	    naturalness_counts[key] += 1
             if q.get("Correct_2_passage") is True:
                 count_2_passage += 1
             elif q.get("Correct_A_passage") is True:
@@ -123,16 +137,22 @@ with open(OUTPUT_FILE, 'r') as f:
             else:
                 count_error += 1
 
-	    # Calculate average naturalness score
-            if q.get("naturalness_score") is not None:
-                total_naturalness_score += q["naturalness_score"]
-                scored_questions += 1
+            # Calculate average naturalness score
+           # if q.get("naturalness_score") is not None:
+            #    total_naturalness_score += q["naturalness_score"]
+             #   scored_naturalness_questions += 1
+
+            # Calculate average objectivity score
+            if q.get("objectivity_score") is not None:
+                total_objectivity_score += q["objectivity_score"]
+                scored_objectivity_questions += 1
 
 if total_questions == 0:
     print("\nNo questions were processed!")
     exit()
 
-average_naturalness = total_naturalness_score / scored_questions if scored_questions > 0 else 0
+#average_naturalness = total_naturalness_score / scored_naturalness_questions if scored_naturalness_questions > 0 else 0
+average_objectivity = total_objectivity_score / scored_objectivity_questions if scored_objectivity_questions > 0 else 0
 
 print("\n\n--- FINAL METRICS ---")
 print(f"Total Questions Processed: {total_questions}")
@@ -141,4 +161,14 @@ print(f"➡️  Only Passage A: {count_A_passage} ({(count_A_passage/total_quest
 print(f"➡️  Only Passage B: {count_B_passage} ({(count_B_passage/total_questions)*100:.2f}%)")
 print(f"❌ Not Answerable / General Knowledge: {count_no_passage} ({(count_no_passage/total_questions)*100:.2f}%)")
 print(f"⚠️ Errors: {count_error} ({(count_error/total_questions)*100:.2f}%)")
-print(f"🌿 Average Naturalness Score: {average_naturalness:.2f} / 5.0")
+print("-" * 25)
+#print(f"🌿 Average Naturalness Score: {average_naturalness:.2f} / 5.0")
+print(f"🎯 Average Objectivity Score: {average_objectivity:.2f} / 5.0")
+print("\n🌿 Average Naturalness Scores by Dimension:")
+for key in naturalness_keys:
+    count = naturalness_counts[key]
+    if count > 0:
+        avg = naturalness_totals[key] / count
+        print(f"- {key}: {avg:.2f} / 5.0")
+    else:
+        print(f"- {key}: No valid scores")
