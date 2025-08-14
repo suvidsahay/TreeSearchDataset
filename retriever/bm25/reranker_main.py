@@ -2,7 +2,7 @@ import json
 import re
 from retriever import retrieve_best_passage, fetch_wikipedia_page
 from question_generation import load_openai_key, generate_questions
-from verification3 import verify_question_v3, evaluate_question_naturalness  # <-- Use the new verification file
+from verification4 import verify_question_v3, evaluate_question_naturalness  
 from tqdm import tqdm
 from langchain_openai import ChatOpenAI
 import os
@@ -24,8 +24,8 @@ cross_encoder = CrossEncoder('cross-encoder/ms-marco-MiniLM-L6-v2')
 # --- Load Data ---
 
 FILE1 = "filtered_fever_with_wiki_updated.jsonl"
-FILE2 = "reranked_output_5.jsonl"
-OUTPUT = "merged_claims_wiki.jsonl"
+#FILE2 = "reranked_output_5.jsonl"
+#OUTPUT = "merged_claims_wiki.jsonl"
 
 # Step 1: load claims+URLs from file1
 fever_data = {}
@@ -46,21 +46,21 @@ with open(FILE1, 'r') as f1:
         }
 
 # Step 2: read file2, append titles to wiki_urls under the same claim/query
-with open(FILE2, 'r') as f2:
-    for line in f2:
-        if not line.strip():
-            continue
-        rec = json.loads(line)
-        query = rec.get("query")
-        docs = rec.get("docs", [])
-        if not query or query not in fever_data:
-            continue
-        existing = set(fever_data[query]["wiki_urls"])
-        for d in docs:
-            title = d.get("title").replace("_", " ")
-            if title and title not in existing:
-                fever_data[query]["wiki_urls"].append(title)
-                existing.add(title)
+# with open(FILE2, 'r') as f2:
+#    for line in f2:
+#        if not line.strip():
+#            continue
+#        rec = json.loads(line)
+#        query = rec.get("query")
+#        docs = rec.get("docs", [])
+#        if not query or query not in fever_data:
+#            continue
+#        existing = set(fever_data[query]["wiki_urls"])
+#        for d in docs:
+#            title = d.get("title").replace("_", " ")
+#            if title and title not in existing:
+#                fever_data[query]["wiki_urls"].append(title)
+#                existing.add(title)
 
 fever_data = dict(islice(fever_data.items(), 20))
 
@@ -102,7 +102,7 @@ for record in tqdm(fever_data.values()):
         key=lambda x: x[1],
         reverse=True
     )
-    print("🏆 Top-ranked documents and scores:")
+    print("Top-ranked documents and scores:")
     for (title, _), score in ranked:
         print(f" - {title!r}: {score:.4f}")
 
@@ -121,7 +121,7 @@ for record in tqdm(fever_data.values()):
 
     # --- Step 4: Retrieve best passages via BM25 ---
     doc1 = retrieve_best_passage(selected[0][0], claim, method='cross-encoder')
-    doc2 = retrieve_best_passage(selected[1][0], claim, method='cross-encoder')
+    doc2 = retrieve_best_passage(selected[1][0], claim, method='cross-encoder', exclusion_context=doc1)
 
     if not doc1 or not doc2:
         continue
@@ -182,60 +182,59 @@ for record in tqdm(fever_data.values()):
         f_out.write('\n')
 
 # --- Metrics Calculation Section (will now be accurate) ---
-count_2_passage = 0
-count_A_passage = 0
-count_B_passage = 0
-count_no_passage = 0
-count_error = 0
+count_sufficient_A = 0
+count_sufficient_B = 0
+count_sufficient_both = 0
+count_sufficient_none = 0
 total_questions = 0
-total_naturalness_score = 0
-scored_naturalness_questions = 0
-total_objectivity_score = 0
-scored_objectivity_questions = 0
+
+# New counters for multi-hop analysis
+truly_multi_hop = 0  # Both is sufficient, but neither A nor B is.
+leaky_passage = 0    # A or B is sufficient on its own.
 
 with open(OUTPUT_FILE, 'r') as f:
     for line in f:
         entry = json.loads(line)
         for q in entry["questions"]:
             total_questions += 1
-            if q.get("Correct_2_passage") is True:
-                count_2_passage += 1
-            elif q.get("Correct_A_passage") is True:
-                count_A_passage += 1
-            elif q.get("Correct_B_passage") is True:
-                count_B_passage += 1
-            elif q.get("Correct_no_passage") is True:
-                count_no_passage += 1
-            else:
-                count_error += 1
 
-            # Calculate average naturalness score
-            if q.get("naturalness_score") is not None:
-                total_naturalness_score += q["naturalness_score"]
-                scored_naturalness_questions += 1
+            # Get the boolean flags for the current question
+            is_A_sufficient = q.get("Sufficient_A_passage", False)
+            is_B_sufficient = q.get("Sufficient_B_passage", False)
+            is_both_sufficient = q.get("Sufficient_both_passages", False)
+            is_none_sufficient = q.get("Sufficient_no_passage", False)
 
-            # Calculate average objectivity score
+            # --- Independent Counters (a question can be in multiple categories) ---
+            if is_A_sufficient:
+                count_sufficient_A += 1
+            if is_B_sufficient:
+                count_sufficient_B += 1
+            if is_both_sufficient:
+                count_sufficient_both += 1
+            if is_none_sufficient:
+                count_sufficient_none += 1
 
-            if q.get("objectivity_score") is not None:
-                total_objectivity_score += q["objectivity_score"]
-                scored_objectivity_questions += 1
+            # --- Analytical Counters ---
+            if is_both_sufficient and not is_A_sufficient and not is_B_sufficient:
+                truly_multi_hop += 1
+
+            if is_A_sufficient or is_B_sufficient:
+                leaky_passage += 1
+
 
 if total_questions == 0:
     print("\nNo questions were processed!")
     exit()
 
-average_naturalness = total_naturalness_score / scored_naturalness_questions if scored_naturalness_questions > 0 else 0
-average_objectivity = total_objectivity_score / scored_objectivity_questions if scored_objectivity_questions > 0 else 0
 
 print("\n\n--- FINAL METRICS ---")
 print(f"Total Questions Processed: {total_questions}")
-print(f"✅ Needs Both Passages: {count_2_passage} ({(count_2_passage/total_questions)*100:.2f}%)")
-print(f"➡️  Only Passage A: {count_A_passage} ({(count_A_passage/total_questions)*100:.2f}%)")
-print(f"➡️  Only Passage B: {count_B_passage} ({(count_B_passage/total_questions)*100:.2f}%)")
-print(f"❌ Not Answerable / General Knowledge: {count_no_passage} ({(count_no_passage/total_questions)*100:.2f}%)")
-print(f"⚠️ Errors: {count_error} ({(count_error/total_questions)*100:.2f}%)")
-print("-" * 25)
-print(f"🌿 Average Naturalness Score: {average_naturalness:.2f} / 5.0")
-print(f"🎯 Average Objectivity Score: {average_objectivity:.2f} / 5.0")
+print("\n--- Sufficiency Counts (Non-Exclusive) ---")
+print(f"Sufficient with Both Passages: {count_sufficient_both} ({(count_sufficient_both/total_questions)*100:.2f}%)")
+print(f"Sufficient with Only Passage A: {count_sufficient_A} ({(count_sufficient_A/total_questions)*100:.2f}%)")
+print(f"Sufficient with Only Passage B: {count_sufficient_B} ({(count_sufficient_B/total_questions)*100:.2f}%)")
+print(f"Answerable by General Knowledge: {count_sufficient_none} ({(count_sufficient_none/total_questions)*100:.2f}%)")
 
-
+print("\n--- Question Quality Analysis ---")
+print(f"Truly Multi-Hop (Requires Both): {truly_multi_hop} ({(truly_multi_hop/total_questions)*100:.2f}%)")
+print(f"Leaky Passage (Answerable by Single Passage): {leaky_passage} ({(leaky_passage/total_questions)*100:.2f}%)")
