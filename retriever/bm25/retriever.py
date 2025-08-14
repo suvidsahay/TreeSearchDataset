@@ -4,6 +4,7 @@ from nltk.tokenize import sent_tokenize
 from rank_bm25 import BM25Okapi
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.feature_extraction.text import TfidfVectorizer 
 import numpy as np
 from sentence_transformers.cross_encoder import CrossEncoder
 
@@ -81,7 +82,26 @@ def retrieve_bm25_passage(title, query):
 
     return passages[best_idx]
 
-def retrieve_cross_encoder(title, query):
+#def retrieve_cross_encoder(title, query):
+#    text = fetch_wikipedia_page(title)
+#    if not text:
+#        print(f"Cross Encoder: Page '{title}' does not exist.")
+#        return None
+
+#    passages = split_into_passages(text)
+#    if not passages:
+#        print(f"Cross Encoder: Could not split page '{title}' into passages.")
+#        return None
+
+#    pairs = [[query, passage] for passage in passages]
+#    rerank_scores = cross_encoder.predict(pairs)
+#    best_idx = np.argmax(rerank_scores)
+
+#    return passages[best_idx]
+
+
+def retrieve_cross_encoder(title, query, exclusion_context=None): # Added exclusion_context
+    """Retrieves the best passage, optionally avoiding overlapping context."""
     text = fetch_wikipedia_page(title)
     if not text:
         print(f"Cross Encoder: Page '{title}' does not exist.")
@@ -94,18 +114,49 @@ def retrieve_cross_encoder(title, query):
 
     pairs = [[query, passage] for passage in passages]
     rerank_scores = cross_encoder.predict(pairs)
-    best_idx = np.argmax(rerank_scores)
 
-    return passages[best_idx]
+    # If there's no exclusion context, just return the top-scoring passage.
+    if not exclusion_context:
+        best_idx = np.argmax(rerank_scores)
+        return passages[best_idx]
+
+    # If there IS an exclusion context, find a passage that is both
+    # relevant to the query AND different from the context.
+
+    # Get top 5 passages based on relevance to the query
+    top_n_indices = np.argsort(rerank_scores)[::-1][:5]
+
+    if not top_n_indices.any():
+        return passages[np.argmax(rerank_scores)] # Fallback to the best one
+
+    top_passages = [passages[i] for i in top_n_indices]
+
+    # Find which of these top 5 is LEAST similar to the exclusion_context
+    try:
+        vectorizer = TfidfVectorizer().fit(top_passages + [exclusion_context])
+        passage_vectors = vectorizer.transform(top_passages)
+        exclusion_vector = vectorizer.transform([exclusion_context])
+
+        # Lower similarity is better
+        similarities = cosine_similarity(passage_vectors, exclusion_vector)[:, 0]
+
+        # The best passage index from the top_n_indices list
+        best_passage_local_idx = np.argmin(similarities)
+        final_passage_idx = top_n_indices[best_passage_local_idx]
+
+        return passages[final_passage_idx]
+    except ValueError:
+        # We fallback if TF-IDF fails (e.g., empty strings)
+        return passages[top_n_indices[0]]
 
 
-def retrieve_best_passage(title, query, method='sbert'):
+def retrieve_best_passage(title, query, method='sbert', exclusion_context=None):
     print(f"Retrieving from '{title}' using {method.upper()}...")
     if method == 'sbert':
         return retrieve_sbert_passage(title, query)
     elif method == 'bm25':
         return retrieve_bm25_passage(title, query)
     elif method == "cross-encoder":
-        return retrieve_cross_encoder(title, query)
+        return retrieve_cross_encoder(title, query, exclusion_context=exclusion_context)
     else:
         raise ValueError("Method must be either 'sbert','bm25' or 'cross-encoder'")
