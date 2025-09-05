@@ -4,6 +4,7 @@ import json
 from langchain_openai import ChatOpenAI
 from langchain.schema import HumanMessage
 import os
+from typing import List, Tuple
 
 # --- HELPER FUNCTIONS ---
 
@@ -29,7 +30,7 @@ Answer:"""
 Question: {question}
 
 Answer:"""
-    
+
     response = chat_model.invoke([HumanMessage(content=prompt)])
     return response.content
 
@@ -60,7 +61,7 @@ Respond ONLY with a valid JSON object in the format:
 def evaluate_question_naturalness(question, chat_model):
     """Asks the LLM to score the question across 6 task-specific dimensions."""
     print("   - Evaluating question naturalness (multi-dimension)...")
-    
+
     eval_prompt = f"""You are an expert in evaluating multi-hop question quality.
 
 Evaluate the following question using the SIX criteria below. For each one, give a score from 1 to 5 and one short explanation at the end.
@@ -162,25 +163,25 @@ Return your answer as a valid JSON object in this exact format:
   "justification": "<one short explanation>"
 }}
 
-Question: "{question}" """ 
+Question: "{question}" """
 
-    response = chat_model.invoke([HumanMessage(content=eval_prompt)]) 
- 
-    try: 
-        json_start = response.content.find('{') 
-        json_end = response.content.rfind('}') + 1 
-        json_data = response.content[json_start:json_end] 
-        return json.loads(json_data) 
-    except Exception: 
-       return { 
-            "clear_single_question_score": None, 
-            "combines_passages_score": None, 
-            "requires_both_score": None, 
-            "logical_dependency_score": None, 
-            "hotpot_style_score": None, 
-            "objectivity_score": None, 
-            "justification": "Evaluation parsing error." 
-        } 
+    response = chat_model.invoke([HumanMessage(content=eval_prompt)])
+
+    try:
+        json_start = response.content.find('{')
+        json_end = response.content.rfind('}') + 1
+        json_data = response.content[json_start:json_end]
+        return json.loads(json_data)
+    except Exception:
+       return {
+            "clear_single_question_score": None,
+            "combines_passages_score": None,
+            "requires_both_score": None,
+            "logical_dependency_score": None,
+            "hotpot_style_score": None,
+            "objectivity_score": None,
+            "justification": "Evaluation parsing error."
+        }
 
 def verify_question_v3(documents, question, ground_truth_answer):
     """
@@ -195,9 +196,9 @@ def verify_question_v3(documents, question, ground_truth_answer):
     answer_B = _generate_answer_from_context(doc_B, question, chat)
     answer_both = _generate_answer_from_context(f"Passage A: {doc_A}\n\nPassage B: {doc_B}", question, chat)
     answer_none = _generate_answer_from_context(None, question, chat)
-    
+
     objectivity_details = evaluate_answer_objectivity(ground_truth_answer, answer_both, chat)
-    
+
     comparison_prompt = f"""You are an expert evaluator. Your task is to see which of the generated answers ('Answer A', 'Answer B', 'Answer Both', 'Answer None') is the closest match to the 'Ground Truth Answer'.
 
 Question: "{question}"
@@ -238,3 +239,228 @@ Your JSON response (e.g., {{"Correct_2_passage": true, "Correct_A_passage": fals
     except Exception as e:
         print(f"CRITICAL PARSING ERROR in verification3: {e}")
         return {"answer": f"Comparison Parsing Error: {final_response.content}"}
+
+def verify_question_3docs(documents, question, ground_truth_answer):
+    if len(documents) != 3:
+        raise ValueError("Expected exactly 3 documents.")
+
+    doc_A = documents[0]
+    doc_B = documents[1]
+    doc_C = documents[2]
+    chat = ChatOpenAI(temperature=0, model_name="gpt-4o-mini", openai_api_key=os.getenv("OPENAI_API_KEY"))
+
+    answer_A = _generate_answer_from_context(doc_A, question, chat)
+    answer_B = _generate_answer_from_context(doc_B, question, chat)
+    answer_C = _generate_answer_from_context(doc_C, question, chat)
+    answer_all = _generate_answer_from_context(f"Passage A:\n{documents[0]}\n\n"
+        f"Passage B:\n{documents[1]}\n\n"
+        f"Passage C:\n{documents[2]}\n", question, chat)
+    answer_none = _generate_answer_from_context(None, question, chat)
+
+    objectivity_details = evaluate_answer_objectivity(ground_truth_answer, answer_all, chat)
+
+
+    comparison_prompt = f"""You are an expert evaluator. Your task is to determine which context produces the answer closest to the 'Ground Truth Answer' with the following priority: 
+1. Answer A (from Passage A only), 
+2. Answer B (from Passage B only), 
+2. Answer C (from Passage C only), 
+3. Answer All (from All passages), 
+4. Answer None (from general knowledge).
+
+Question: "{question}"
+
+Ground Truth Answer:
+"{ground_truth_answer}"
+
+---
+Generated Answers to Compare:
+1. Answer A (from Passage A only): "{answer_A}"
+2. Answer B (from Passage B only): "{answer_B}"
+2. Answer C (from Passage C only): "{answer_B}"
+3. Answer All (from All passages): "{answer_all}"
+4. Answer None (from general knowledge): "{answer_none}"
+---
+
+Analyze the answers and return a single string indicating which context was sufficient to produce the closest match to the Ground Truth Answer. 
+The output must be one of: "Correct_A_passage", "Correct_B_passage", "Correct_C_passage", "Correct_all_passage", "Correct_no_passage". If none are a good match, return "Correct_no_passage".
+
+Your response (e.g., "Correct_C_passage"):
+"""
+
+    final_response = chat.invoke([HumanMessage(content=comparison_prompt)])
+
+    try:
+        result = {
+            "Correct_A_passage": False,
+            "Correct_B_passage": False,
+            "Correct_C_passage": False,
+            "Correct_all_passage": False,
+            "Correct_no_passage": False,
+            "generated_answer_A": answer_A,
+            "generated_answer_B": answer_B,
+            "generated_answer_C": answer_C,
+            "generated_answer_all": answer_all,
+            "generated_answer_none": answer_none
+        }
+        result.update(objectivity_details)
+
+        response_text = final_response.content.strip()
+        if response_text in ["Correct_A_passage", "Correct_B_passage", "Correct_C_passage", "Correct_all_passage", "Correct_no_passage"]:
+            result[response_text] = True
+        else:
+            result["Correct_no_passage"] = True
+
+        print(f"Comparison Prompt: \n{comparison_prompt}")
+        print(f"final_response: \n{final_response.content}")
+        print(result)
+        return result
+    except Exception as e:
+        print(f"CRITICAL PARSING ERROR in verification3: {e}")
+        return {"answer": f"Comparison Parsing Error: {final_response.content}"}
+
+
+def verify_question_final(documents: list[str], question: str, ground_truth_answer: str) -> dict:
+    """
+    Verifies a question by generating answers from individual documents, all documents combined,
+    and general knowledge, then asks an LLM to determine which context is sufficient.
+    (This is the function you provided).
+    """
+    # ... (Paste your full verify_question_final function here) ...
+    if not documents:
+        raise ValueError("The documents list cannot be empty.")
+
+    num_docs = len(documents)
+    chat = ChatOpenAI(temperature=0, model_name="gpt-4o-mini", openai_api_key=os.getenv("OPENAI_API_KEY"))
+
+    # --- 1. Generate answers from all sources ---
+    generated_answers = {}
+
+    # Answers from individual passages
+    for i, doc in enumerate(documents):
+        doc_label = chr(65 + i)  # A, B, C, ...
+        generated_answers[f'answer_{doc_label}'] = _generate_answer_from_context(doc, question, chat)
+
+    # Answer from all passages combined
+    all_docs_context = "\n\n".join(
+        [f"Passage {chr(65 + i)}:\n{doc}" for i, doc in enumerate(documents)]
+    )
+    generated_answers['answer_all'] = _generate_answer_from_context(all_docs_context, question, chat)
+
+    # Answer from no context (general knowledge)
+    generated_answers['answer_none'] = _generate_answer_from_context(None, question, chat)
+
+    # --- 2. Perform objectivity evaluation on the 'all passages' answer ---
+    objectivity_details = evaluate_answer_objectivity(
+        ground_truth_answer, generated_answers['answer_all'], chat
+    )
+
+    # --- 3. Build the dynamic comparison prompt ---
+    prompt_parts = [
+        "You are an expert evaluator. Your task is to determine which context produces the answer closest to the 'Ground Truth Answer'.",
+        f"Question: \"{question}\"",
+        f"Ground Truth Answer:\n\"{ground_truth_answer}\"",
+        "---",
+        "Generated Answers to Compare:"
+    ]
+
+    possible_choices = []
+    # Add individual passage answers to the prompt
+    for i in range(num_docs):
+        doc_label = chr(65 + i)
+        prompt_parts.append(
+            f"{i + 1}. Answer {doc_label} (from Passage {doc_label} only): \"{generated_answers[f'answer_{doc_label}']}\"")
+        possible_choices.append(f"Correct_{doc_label}_passage")
+
+    # Add combined and no-context answers to the prompt
+    prompt_parts.append(f"{num_docs + 1}. Answer All (from All passages): \"{generated_answers['answer_all']}\"")
+    prompt_parts.append(f"{num_docs + 2}. Answer None (from general knowledge): \"{generated_answers['answer_none']}\"")
+    possible_choices.extend(["Correct_all_passage", "Correct_no_passage"])
+
+    prompt_parts.extend([
+        "---",
+        f"Analyze the answers and return a single string indicating which context was sufficient to produce the closest match. The output must be one of: {', '.join(possible_choices)}.",
+        "If none are a good match, return \"Correct_no_passage\".",
+        "Your response:"
+    ])
+
+    comparison_prompt = "\n".join(prompt_parts)
+
+    # --- 4. Get the final evaluation from the model ---
+    final_response = chat.invoke([HumanMessage(content=comparison_prompt)])
+    response_text = final_response.content.strip()
+
+    # --- 5. Structure and return the results ---
+    try:
+        result = {}
+        for choice in possible_choices:
+            result[choice] = False
+        if response_text in result:
+            result[response_text] = True
+        else:
+            result["Correct_no_passage"] = True
+        # ... (add other generated answers and details if needed) ...
+        return result
+    except Exception as e:
+        return {"error": f"Comparison Parsing Error: {e}"}
+
+
+def get_required_passages(question: str, answer: str, candidate_passages: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
+    """
+    Directly asks an LLM to identify the minimal set of passages required to answer a question.
+    """
+    if not candidate_passages:
+        return []
+
+    chat = ChatOpenAI(temperature=0, model_name="gpt-4o", openai_api_key=os.getenv("OPENAI_API_KEY"))
+
+    # Create labeled passages and a map to retrieve them later
+    passage_map = {}
+    formatted_passages = []
+    for i, (title, text) in enumerate(candidate_passages):
+        label = chr(65 + i)  # A, B, C...
+        passage_map[label] = (title, text)
+        formatted_passages.append(f"Passage {label} (from '{title}'):\n{text}")
+
+    all_passages_text = "\n\n---\n\n".join(formatted_passages)
+
+    prompt = f"""
+You are an expert analyst. Your task is to identify the absolute minimum set of passages required to construct the Ground Truth Answer for the given Question.
+
+**Question:**
+{question}
+
+**Ground Truth Answer:**
+{answer}
+
+**Candidate Passages:**
+{all_passages_text}
+
+---
+**Instructions:**
+Analyze all passages. Identify the smallest set of passages that are essential to answer the question.
+
+- If a single passage is sufficient, return only its label (e.g., "B").
+- If multiple passages are required, return their labels separated by commas (e.g., "A, C").
+- If the answer is general knowledge and requires no passages, return the word "None".
+- If the answer cannot be formed from the passages, also return "None".
+
+Your response must contain *only* the labels (e.g., "A, C") or the word "None".
+
+**Required Passage Labels:**
+"""
+
+    # Call the LLM and parse the response
+    response = chat.invoke(prompt)
+    response_text = response.content.strip()
+
+    # Build the final list of passages based on the LLM's response
+    required_passages = []
+    if response_text.upper() != 'NONE':
+        required_labels = [label.strip() for label in response_text.split(',')]
+        for label in required_labels:
+            if label in passage_map:
+                required_passages.append(passage_map[label])
+            else:
+                print(f"Warning: Model returned an unknown passage label '{label}'.")
+
+    return required_passages
