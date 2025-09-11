@@ -411,7 +411,7 @@ def get_required_passages(question: str, answer: str, candidate_passages: List[T
     if not candidate_passages:
         return []
 
-    chat = ChatOpenAI(temperature=0, model_name="gpt-4o", openai_api_key=os.getenv("OPENAI_API_KEY"))
+    chat = ChatOpenAI(model_name="o4-mini", openai_api_key=os.getenv("OPENAI_API_KEY"))
 
     # Create labeled passages and a map to retrieve them later
     passage_map = {}
@@ -424,7 +424,7 @@ def get_required_passages(question: str, answer: str, candidate_passages: List[T
     all_passages_text = "\n\n---\n\n".join(formatted_passages)
 
     prompt = f"""
-You are an expert analyst. Your task is to identify the absolute minimum set of passages required to construct the Ground Truth Answer for the given Question.
+You are an expert analyst. Your task is to identify the minimum set of passages required to construct the Ground Truth Answer for the given Question.
 
 **Question:**
 {question}
@@ -437,7 +437,7 @@ You are an expert analyst. Your task is to identify the absolute minimum set of 
 
 ---
 **Instructions:**
-Analyze all passages. Identify the smallest set of passages that are essential to answer the question.
+Analyze all passages. Identify the set of passages that are essential to answer the question.
 
 - If a single passage is sufficient, return only its label (e.g., "B").
 - If multiple passages are required, return their labels separated by commas (e.g., "A, C").

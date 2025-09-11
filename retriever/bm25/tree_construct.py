@@ -8,11 +8,9 @@ from dataclasses import dataclass, field
 from typing import List, Tuple
 from itertools import islice
 
-# Assuming these are your existing, correctly implemented modules
 from retriever import retrieve_best_passage, fetch_wikipedia_page, get_doc_score_from_passages
-from question_generation import load_openai_key, generate_seed_questions, refine_question
-from verification3 import evaluate_question_naturalness, \
-    get_required_passages  # We will create a new verification function below
+from question_generation import load_openai_key, generate_seed_questions, generate_multihop_questions
+from verification3 import evaluate_question_naturalness, get_required_passages
 from tqdm import tqdm
 from langchain_openai import ChatOpenAI
 from sentence_transformers import CrossEncoder
@@ -261,13 +259,15 @@ def main():
             print(f"Expanding with score {-neg_score:.4f} using passage from '{passage_to_add[0]}'")
 
             # 5d: Generate the new, more complex question
-            multihop_text = refine_question(prev_state.question, passage_to_add[0])
+            all_passage_tuples = prev_state.passages_used + [passage_to_add]
+
+            passage_texts = [text for title, text in all_passage_tuples]
+            multihop_text = generate_multihop_questions(passage_texts)
             parsed_multihop = parse_generated_text(multihop_text)
             if not parsed_multihop: continue
 
             for item in parsed_multihop:
-                passages_to_verify = prev_state.passages_used + [passage_to_add]
-                minimal_passages_used = get_required_passages(item["question"], item["answer"], passages_to_verify)
+                minimal_passages_used = get_required_passages(item["question"], item["answer"], all_passage_tuples)
 
                 new_state = QuestionState(
                     question=item["question"], explanation=item["explanation"],

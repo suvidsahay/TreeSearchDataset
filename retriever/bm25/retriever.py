@@ -38,6 +38,31 @@ def split_into_passages(text, chunk_size=300, overlap=20):
         passages.append(" ".join(words[i:i + chunk_size]))
     return passages
 
+def get_doc_score_from_passages(query, title, cache):
+    # Check cache
+    if title in cache:
+        text = cache[title]
+    else:
+        text = fetch_wikipedia_page(title)
+        cache[title] = text
+
+    if not text:
+        print(f"Cross Encoder: Page '{title}' does not exist.")
+        return None
+
+    passages = split_into_passages(text)
+    if not passages:
+        print(f"Cross Encoder: Could not split page '{title}' into passages.")
+        return None
+
+    pairs = [[query, passage] for passage in passages]
+    rerank_scores = cross_encoder.predict(pairs)  # NumPy array
+
+    if len(rerank_scores) == 0:
+        return None
+
+    return float(np.max(rerank_scores))  # Convert to plain float for safety
+
 def retrieve_sbert_passage(title, query):
     """Retrieves the best passage from a Wikipedia article using SBERT."""
     text = fetch_wikipedia_page(title)

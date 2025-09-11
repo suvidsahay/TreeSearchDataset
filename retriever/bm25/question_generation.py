@@ -137,73 +137,74 @@ Document 2:
 
     return response.content
 
-def refine_question(original_question, new_passage, num_questions=3):
+
+def generate_multihop_questions(documents: list, num_questions=3):
     """
-    Generates a third bridging question that requires both the original question's context
-    and the new passage to answer.
+        Generates multi-hop questions that require combining information from all provided passages.
+        This function is generalized to handle n passages.
+        """
+    num_docs = len(documents)
+    if num_docs < 2:
+        print("Warning: At least two documents are required to generate multi-hop questions.")
+        return ""
 
-    Returns:
-        tuple: (question, explanation, answer)
+    # Dynamically create the documents section for the prompt by numbering each document
+    formatted_docs = []
+    for i, doc in enumerate(documents):
+        formatted_docs.append(f"Document {i + 1}:\n{doc}")
+    documents_section = "\n\n---\n\n".join(formatted_docs)
+
+    # The prompt is now templated with the number of documents
+    prompt = f"""You are given {num_docs} documents.
+
+    Your task is to generate {num_questions} clear, natural-sounding, fact-based questions that require combining information from ALL {num_docs} of the provided documents to answer.
+
+    Requirements:
+    · The question must be unanswerable by using any combination of {num_docs - 1} documents. A unique fact must be required from EACH document.
+    · The question must not be unanswerable.
+    · The question must not be a yes/no question.
+    · The answer must be a single, objective fact (e.g., a name, number, date, or location) explicitly stated in the documents.
+    · The question must sound natural, as if written by a human.
+
+    Critical Test: Before generating each question, you must verify internally that a unique, essential fact is required from each of the {num_docs} documents. If the question can be answered without using information from any single one of the documents, it is an invalid question.
+
+    Example of a good question(for 2 documents): Document 1: Paris is the capital of France. Document 2: The Eiffel Tower was completed in 1889. Question: Which famous landmark in the capital of France was completed in 1889?
+    
+    Examples of BAD questions:
+    · What is the capital of France? (answerable from one document)
+    · In the year of 1889 completion, what is the landmark that located inside Paris capital of France? (unnatural phrasing)
+    · Is the Eiffel Tower located in Paris? (yes/no question)
+    
+    Important:
+    · Do not mention or imply where each fact comes from.
+    · Do not assume any relationship between facts unless it is explicitly stated.
+    · Ensure that named entities are referred to clearly and unambiguously.
+
+    For each question you generate, you MUST provide three things:
+    1.  The question itself.
+    2.  A brief, one-sentence explanation of how all {num_docs} documents are required.
+    3.  The ground truth answer to the question, synthesized ONLY from the provided documents.
+
+    Use the following format exactly, with "---" as a separator between questions:
+    Question: [Your question here]
+    Explanation: [Your one-sentence explanation here]
+    Answer: [The ground truth answer to your question]
+    ---
+    ...
+
+    Here are the documents to use:
+    ---
+    {documents_section}
+    ---
     """
 
-    prompt = f"""You are given:
-1. An original question that was created based on two previous documents.
-2. A new passage containing additional information.
-
-Your task is to create {num_questions} new, clear, natural-sounding, fact-based questions
-that requires BOTH:
-· Information from the original question's context.
-· Information from the new passage.
-
-Requirements:
-· The questions must NOT be answerable using only the original question's context or only the new passage.
-· The questions must NOT be unanswerable.
-· The questions must NOT be a yes/no question.
-· The answers must be a single, objective fact explicitly stated in the texts.
-· Use natural phrasing, as if written by a human.
-
-Example of a GOOD question: Original Question: What is the capital of France. Document 2: The Eiffel Tower was completed in 1889. Question: Which famous landmark in the capital of France was completed in 1889?
-
-Examples of BAD questions:
-· What is the capital of France? (Same as the last question)
-· In the year of 1889 completion, what is the landmark that located inside Paris capital of France? (unnatural phrasing)
-· Is the Eiffel Tower located in Paris? (yes/no question)
-
-Important:
-· Do not mention or imply where each fact comes from.
-· Do not assume any relationship between facts unless it is explicitly stated.
-· Ensure that named entities are referred to clearly and unambiguously.
-
-For each question you generate, you MUST provide three things:
-1.  The question itself.
-2.  A brief, one-sentence explanation of the bridge connecting the two documents.
-3.  The ground truth answer to the question, synthesized ONLY from the provided documents.
-Use the following format exactly, with "---" as a separator between questions:
-Question: [Your question here]
-Explanation: [Your one-sentence explanation here]
-Answer: [The ground truth answer to your question]
----
-
-Question: [Your next question here]
-
-Explanation: [Your next explanation here]
-
-Answer: [The ground truth answer to your next question]
-
----
-...
-Here are the documents to use: 
-
-Original Question Context:
-{original_question}
-
----
-
-New Passage:
-{new_passage}
-"""
-
+    # Using gpt-4o for the best quality generation
     chat = ChatOpenAI(temperature=0.5, model_name="gpt-4o")
     response = chat.invoke([HumanMessage(content=prompt)])
+
+    print(f"\nGenerated Questions from {num_docs} documents:")
+    # Print a snippet from each document for context
+    for i, doc in enumerate(documents):
+        print(f"Document {i + 1} snippet: {doc}...")
 
     return response.content
