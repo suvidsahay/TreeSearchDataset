@@ -26,16 +26,47 @@ def fetch_wikipedia_page(title):
     page = wiki_wiki.page(title)
     return page.text if page.exists() else None
 
-def split_into_passages(text, chunk_size=300, overlap=20):
+def split_into_passages(text, target_word_count=250, overlap_sentences=2):
     """
-    A more robust passage splitter that splits by words.
+    Splits text into passages that respect sentence boundaries.
+    
+    Args:
+        text (str): The input text.
+        target_word_count (int): The desired approximate number of words per passage.
+        overlap_sentences (int): The number of sentences to overlap between consecutive passages.
     """
     if not text:
         return []
-    words = text.split()
+
+    # 1. Split the entire document into sentences.
+    sentences = sent_tokenize(text)
+    if not sentences:
+        return []
+
     passages = []
-    for i in range(0, len(words), chunk_size - overlap):
-        passages.append(" ".join(words[i:i + chunk_size]))
+    current_sentence_index = 0
+    
+    # 2. Iterate through sentences and group them into passages.
+    while current_sentence_index < len(sentences):
+        passage_sentences = []
+        word_count = 0
+        
+        # 3. Add sentences to the current passage until the target word count is met or exceeded.
+        temp_index = current_sentence_index
+        while temp_index < len(sentences) and word_count < target_word_count:
+            sentence = sentences[temp_index]
+            passage_sentences.append(sentence)
+            word_count += len(sentence.split())
+            temp_index += 1
+            
+        passages.append(" ".join(passage_sentences))
+
+        # 4. Determine the starting point of the next passage to create an overlap.
+        # We move forward by the number of sentences in the last passage minus the overlap.
+        # We use max(1, ...) to ensure we always advance, preventing an infinite loop.
+        advance_by = max(1, len(passage_sentences) - overlap_sentences)
+        current_sentence_index += advance_by
+        
     return passages
 
 def get_doc_score_from_passages(query, title, cache):
