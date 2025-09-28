@@ -6,6 +6,9 @@ from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
 from sentence_transformers.cross_encoder import CrossEncoder
+import json
+from typing import List, Tuple
+from dataclasses import dataclass, field
 
 cross_encoder = CrossEncoder('cross-encoder/ms-marco-MiniLM-L6-v2')
 
@@ -165,3 +168,82 @@ def retrieve_best_passage(title, query, method='sbert'):
         return retrieve_cross_encoder(title, query)
     else:
         raise ValueError("Method must be either 'sbert','bm25' or 'cross-encoder'")
+
+
+# --- New Data Structure for Iterative Process ---
+@dataclass
+class QuestionState:
+    """Holds the state of a question during the iterative generation process."""
+    question: str
+    explanation: str
+    answer: str
+    passages_used: List[Tuple[str, str]] = field(default_factory=list)  # List of (title, text)
+
+
+def llm_select_next_passage_with_score(current_state: QuestionState, remaining_passages: List[Tuple[str, str]], chat_model) -> Tuple[float, Tuple[str, str]]:
+    """
+    Asks an LLM to choose the best next passage for expansion and rate its confidence.
+
+    Returns:
+        A tuple containing (confidence_score, selected_passage_tuple).
+        Returns (-1.0, None) on failure.
+    """
+    if not remaining_passages:
+        return -1.0, None
+
+    # Create labeled candidate passages for the prompt
+    passage_map = {}
+    formatted_candidates = []
+    for i, (title, text) in enumerate(remaining_passages):
+        label = chr(65 + i)  # A, B, C...
+        passage_map[label] = (title, text)
+        # Use snippets for efficiency in the prompt
+        formatted_candidates.append(f"Candidate {label} (from '{title}'):\n{text[:400]}...")
+
+    all_candidates_text = "\n\n---\n\n".join(formatted_candidates)
+    current_passages_text = "\n".join([f"- '{t}': {p[:200]}..." for t, p in current_state.passages_used])
+
+    # --- UPDATED PROMPT ---
+    prompt = '''You are a brilliant strategist building a complex reasoning question.
+
+    Your current question is: "{current_state.question}"
+    This question is based on the following passages:
+    {current_passages_text}
+
+    Your task is to analyze the candidate passages below and perform two steps:
+    1.  **Select:** Choose the ONE best candidate passage that can be added to form a more complex, high-quality, and logically coherent multi-hop question. Look for the candidate with the strongest potential for a logical bridge.
+    2.  **Score:** Rate your confidence in this choice on a scale of 1 to 5, where 5 is highly confident that this passage will lead to an excellent, logical question.
+
+    ---
+    CANDIDATE PASSAGES:
+    {all_candidates_text}
+    ---
+
+    Respond ONLY with a single, valid JSON object in this exact format:
+    {{
+      "best_candidate_label": "<The single letter of your choice, e.g., 'A', 'B', 'C'>",
+      "confidence_score": <An integer from 1 to 5>
+    }}
+    '''
+
+    response = chat_model.invoke(prompt)
+
+    # --- ROBUST JSON PARSING ---
+    try:
+        json_start = response.content.find('{')
+        json_end = response.content.rfind('}') + 1
+        json_data = response.content[json_start:json_end]
+        parsed_json = json.loads(json_data)
+
+        best_label = parsed_json.get("best_candidate_label")
+        score = float(parsed_json.get("confidence_score", -1.0))
+
+        if best_label in passage_map:
+            return score, passage_map[best_label]
+        else:
+            print(f"Warning: LLM strategist returned an invalid label '{best_label}'.")
+            return -1.0, None
+
+    except (json.JSONDecodeError, AttributeError) as e:
+        print(f"CRITICAL PARSING ERROR in LLM strategist: {e}")
+        return -1.0, None
