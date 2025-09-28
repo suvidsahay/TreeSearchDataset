@@ -80,7 +80,7 @@ def verify_question_N_docs(passages: List[str], question: str, ground_truth_answ
     subset_prompts = [f"Subset {i + 1} ({', '.join([passage_labels[j] for j in subset])})" for i, subsets_at_level in
                       enumerate(all_subsets) for subset in subsets_at_level]
 
-    prompt = f """
+    prompt = f'''
     You are given a question, a ground truth answer, and {num_passages} passages.
     For each of the following subsets of passages, determine if you can fully answer the question.
     Respond with only "Yes" or "No".
@@ -92,7 +92,8 @@ def verify_question_N_docs(passages: List[str], question: str, ground_truth_answ
     ---
     Analysis Tasks:
     {chr(10).join(subset_prompts)}
-    """
+    '''
+    
     response = chat_for_eval.invoke(prompt)
     results = response.content.strip().split('\n')
     verification_details = {f"answerable_with_{subset_prompts[i]}": "yes" in res.lower() for i, res in
