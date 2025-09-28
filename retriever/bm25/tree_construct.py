@@ -8,8 +8,8 @@ from dataclasses import dataclass, field
 from typing import List, Tuple
 from itertools import islice
 
-from retrieverS import retrieve_best_passage, fetch_wikipedia_page, get_doc_score_from_passages, llm_select_next_passage_with_score
-from question_generationS import load_openai_key, generate_seed_questions, generate_multihop_questions
+from retriever import retrieve_best_passage, fetch_wikipedia_page, get_doc_score_from_passages, llm_select_next_passage_with_score
+from question_generation import load_openai_key, generate_seed_questions, generate_multihop_questions
 from verification3 import evaluate_question_naturalness, get_required_passages
 from tqdm import tqdm
 from langchain_openai import ChatOpenAI
