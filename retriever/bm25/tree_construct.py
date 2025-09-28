@@ -8,8 +8,8 @@ from dataclasses import dataclass, field
 from typing import List, Tuple
 from itertools import islice
 
-from retriever import retrieve_best_passage, fetch_wikipedia_page, get_doc_score_from_passages
-from question_generation import load_openai_key, generate_seed_questions, generate_multihop_questions
+from retrieverS import retrieve_best_passage, fetch_wikipedia_page, get_doc_score_from_passages, llm_select_next_passage_with_score
+from question_generationS import load_openai_key, generate_seed_questions, generate_multihop_questions
 from verification3 import evaluate_question_naturalness, get_required_passages
 from tqdm import tqdm
 from langchain_openai import ChatOpenAI
@@ -18,7 +18,7 @@ from sentence_transformers import CrossEncoder
 # --- Configuration ---
 load_openai_key()
 FILE1 = "filtered_fever_with_wiki_updated.jsonl"
-FILE2 = "reranked_output_5.jsonl"
+# FILE2 = "reranked_output_5.jsonl"
 OUTPUT_FILE = "results_iterative.jsonl"
 K_ITERATIONS = 10  # Max number of hops (passages) for a question
 MAX_CANDIDATE_DOCS = 6  # Process top N documents for each claim
@@ -80,7 +80,7 @@ def verify_question_N_docs(passages: List[str], question: str, ground_truth_answ
     subset_prompts = [f"Subset {i + 1} ({', '.join([passage_labels[j] for j in subset])})" for i, subsets_at_level in
                       enumerate(all_subsets) for subset in subsets_at_level]
 
-    prompt = f"""
+    prompt = f """
     You are given a question, a ground truth answer, and {num_passages} passages.
     For each of the following subsets of passages, determine if you can fully answer the question.
     Respond with only "Yes" or "No".
@@ -168,18 +168,18 @@ def main():
             if claim:
                 fever_data[claim] = {"claim": claim, "wiki_urls": list(dict.fromkeys(urls))}
 
-    with open(FILE2, 'r') as f2:
-        for line in f2:
-            if not line.strip(): continue
-            rec = json.loads(line)
-            query = rec.get("query")
-            if not query or query not in fever_data: continue
-            existing = set(fever_data[query]["wiki_urls"])
-            for d in rec.get("docs", []):
-                title = d.get("title").replace("_", " ")
-                if title and title not in existing:
-                    fever_data[query]["wiki_urls"].append(title)
-                    existing.add(title)
+    #with open(FILE2, 'r') as f2:
+        #for line in f2:
+           # if not line.strip(): continue
+          #  rec = json.loads(line)
+         #   query = rec.get("query")
+        #    if not query or query not in fever_data: continue
+       #     existing = set(fever_data[query]["wiki_urls"])
+      #      for d in rec.get("docs", []):
+     #           title = d.get("title").replace("_", " ")
+    #            if title and title not in existing:
+   #                 fever_data[query]["wiki_urls"].append(title)
+  #                  existing.add(title)
 
     fever_data = dict(islice(fever_data.items(), 1))
 
@@ -267,6 +267,20 @@ def main():
             if not parsed_multihop: continue
 
             for item in parsed_multihop:
+                # --- NEW QUALITY GATE ---
+                print("   - Evaluating naturalness of new candidate question...")
+                naturalness_details = evaluate_question_naturalness(item["question"], chat_for_eval)
+
+                # Define your quality threshold. The logical_dependency_score is most critical.
+                LOGICAL_DEPENDENCY_THRESHOLD = 3 # Score must be 4 or 5
+
+                if naturalness_details.get("logical_dependency_score", 0) <= LOGICAL_DEPENDENCY_THRESHOLD:
+                         print(f"❌ Quality gate failed. Logical dependency score was too low. Discarding.")
+                         continue # Skip to the next generated question
+
+                print(f"✅ Quality gate passed.")
+                # --- END OF NEW QUALITY GATE ---
+
                 minimal_passages_used = get_required_passages(item["question"], item["answer"], all_passage_tuples)
 
                 new_state = QuestionState(
@@ -275,22 +289,50 @@ def main():
                 )
                 all_generated_questions.append(new_state)  # Add the new question to our list
 
-                # 5e: Find next best passage and push to the correct PQ
-                # Calculate index based on the ACTUAL number of passages in the new state
-                next_pq_index = len(new_state.passages_used) - 1
+                # Check if the expansion was successful
+                # Get sets of passage titles for easy comparison
+                previous_passages_set = {title for title, _ in prev_state.passages_used}
+                new_passages_set = {title for title, _ in new_state.passages_used}
 
-                # Ensure the calculated index is valid
-                if 0 <= next_pq_index < MAX_CANDIDATE_DOCS:
-                    current_titles_used = {title for title, _ in new_state.passages_used}
-                    new_remaining = [p for p in candidate_passages if p[0] not in current_titles_used]
+                new_hop_count = len(new_passages_set)
+                previous_hop_count = len(previous_passages_set)
 
-                    if new_remaining:
-                        score, next_best_passage = find_next_best_passage(new_state.question, new_remaining)
-                        if next_best_passage:
-                            # The state is a candidate to be expanded to a (hop+1) question
-                            # So we push it into the queue for its current hop level
-                            heapq.heappush(pqs[next_pq_index],
-                                           (-score, next(tie_breaker), new_state, next_best_passage))
+                if new_hop_count > previous_hop_count:
+       		# SUCCESS: The question is now more complex.
+                        print(f"✅ Expansion successful! Hops increased from {previous_hop_count} to {new_hop_count}.")
+                        next_pq_index = new_hop_count - 1 # This will be the correct next queue
+
+                        if next_pq_index < MAX_CANDIDATE_DOCS:
+                                current_titles_used = {title for title, _ in new_state.passages_used}
+                                new_remaining = [p for p in candidate_passages if p[0] not in current_titles_used]
+
+                                if new_remaining:
+                                        score, next_best_passage = llm_select_next_passage_with_score(new_state, new_remaining, chat_for_eval)
+                                        if next_best_passage:
+                    		        # Push the new, verified multi-hop state into the CORRECT queue
+                                                        heapq.heappush(pqs[next_pq_index],
+                                                        (-score, next(tie_breaker), new_state, next_best_passage))
+
+                elif new_hop_count == previous_hop_count and new_passages_set != previous_passages_set:
+                # CASE 2: SUCCESSFUL TRANSFORMATION (e.g., AB -> BC)
+                        print(f"🔄 Transformation successful! Passages shifted. Re-queuing at same hop level.")
+                        # Push back to the *same* priority queue it came from
+                        current_pq_index = previous_hop_count - 1
+
+                        if current_pq_index < MAX_CANDIDATE_DOCS:
+                                current_titles_used = {title for title, _ in new_state.passages_used}
+                                new_remaining = [p for p in candidate_passages if p[0] not in current_titles_used]
+
+                                if new_remaining:
+                                        score, next_best_passage = llm_select_next_passage_with_score(new_state, new_remaining, chat_for_eval)
+                                        if next_best_passage:
+                                        # Push the new, verified multi-hop state into the CORRECT queue
+                                                        heapq.heappush(pqs[next_pq_index],
+                                                        (-score, next(tie_breaker), new_state, next_best_passage))
+
+                else:
+        		# FAILURE: The generated question was leaky and didn't add complexity. Discard it.
+                        print(f"❌ Expansion failed. Question complexity did not increase or change. Discarding.")
 
         # --- Step 6: Perform Final Analysis ---
         print("\n" + "=" * 20 + " SUMMARY OF GENERATED QUESTIONS " + "=" * 20)
