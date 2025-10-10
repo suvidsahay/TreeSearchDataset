@@ -58,8 +58,8 @@ This step initializes and runs the Elasticsearch service, which is required for 
 Activate the project's Python environment and return to the root directory.
 
 ```bash
-# Activate the 'dragincd' Conda environment
-conda activate dragincd
+# Activate the 'dragin' Conda environment
+conda activate dragin
 
 # Navigate back to the project's root directory
 cd ../..
@@ -125,10 +125,11 @@ Complete the final setup steps before running the main analysis script.
    export OPENAI_API_KEY="your_api_key_here"
    ```
 
-6. **Run the Main Script:**
+6. **Run the Main Script with either bm25 retrieval or llm retrieval:**
 
    ```bash
-   python tree_construct.py
+   python tree_construct.py --retrieval_method bm25
+   python tree_construct.py --retrieval_method llm 
    ```
 
 ---
