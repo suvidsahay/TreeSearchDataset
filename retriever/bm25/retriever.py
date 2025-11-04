@@ -159,7 +159,7 @@ def retrieve_cross_encoder(title, query):
 
 
 def retrieve_best_passage(title, query, method='sbert'):
-    print(f"Retrieving from '{title}' using {method.upper()}...")
+    # print(f"Retrieving from '{title}' using {method.upper()}...")
     if method == 'sbert':
         return retrieve_sbert_passage(title, query)
     elif method == 'bm25':
@@ -204,7 +204,7 @@ def llm_select_next_passage_with_score(current_state: QuestionState, remaining_p
     current_passages_text = "\n".join([f"- '{t}': {p[:200]}..." for t, p in current_state.passages_used])
 
     # --- UPDATED PROMPT ---
-    prompt = '''You are a brilliant strategist building a complex reasoning question.
+    prompt = f'''You are a brilliant strategist building a complex reasoning question.
 
     Your current question is: "{current_state.question}"
     This question is based on the following passages:
@@ -227,6 +227,7 @@ def llm_select_next_passage_with_score(current_state: QuestionState, remaining_p
     '''
 
     response = chat_model.invoke(prompt)
+    print(response.content)
 
     # --- ROBUST JSON PARSING ---
     try:

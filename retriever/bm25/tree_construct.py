@@ -3,7 +3,6 @@ import re
 import os
 import heapq
 import itertools
-import argparse
 from dataclasses import dataclass, field
 from typing import List, Tuple, Set
 from itertools import islice
@@ -18,13 +17,13 @@ from sentence_transformers import CrossEncoder
 
 # --- Local Module Imports ---
 # These are kept as imports from separate files as requested.
-from retrieverS import (
+from retriever import (
     retrieve_best_passage,
     fetch_wikipedia_page,
     get_doc_score_from_passages,
     llm_select_next_passage_with_score
 )
-from question_generationS import (
+from question_generation import (
     load_openai_key,
     generate_seed_questions,
     generate_multihop_questions
@@ -61,7 +60,7 @@ load_openai_key()
 FILE1 = "filtered_fever_with_wiki_updated.jsonl"
 FILE2 = "reranked_output_5.jsonl"
 OUTPUT_FILE = "results_iterative.jsonl"
-K_ITERATIONS = 4  # Max expansion attempts per claim
+K_ITERATIONS = 10
 MAX_CANDIDATE_DOCS = 6
 ES_INDEX_NAME = "fever"
 
@@ -79,16 +78,6 @@ except ConnectionError as e:
     print(f"Elasticsearch connection failed: {e}")
     es = None
 
-# --- FEATURE: Argument Parser (from file 2) ---
-def get_args():
-    parser = argparse.ArgumentParser(description="Run the iterative question generation process.")
-    parser.add_argument(
-        '--retrieval_method', type=str, choices=['llm', 'bm25'], default='llm',
-        help="The method for finding the next best passage for expansion ('llm' or 'bm25')."
-    )
-    return parser.parse_args()
-
-# --- Data Structures ---
 @dataclass
 class QuestionState:
     question: str; explanation: str; answer: str
@@ -132,6 +121,12 @@ COMMON ATTRIBUTES:
         return attributes
     except Exception as e:
         print(f"Error during attribute extraction: {e}")
+
+def retrieve_passages_with_bm25(query: str, es_client: Elasticsearch, index_name: str, size: int = 100) -> List[
+    Tuple[str, str]]:
+    """Retrieves top passages from Elasticsearch using BM25."""
+    if not es_client:
+        print("Elasticsearch client not available. Skipping retrieval.")
         return []
 
 def find_anchor_and_bridge_documents(claim: str, wiki_titles: List[str], cache: dict, chat_model, cross_encoder):
@@ -188,18 +183,79 @@ def find_next_best_passage_bm25_and_rerank(question: str, current_titles_used: S
     candidate_titles = [title for title in unique_titles if title not in current_titles_used]
     if not candidate_titles: return -1.0, None
 
+    # --- Intermediate Step: Extract best passage from each of the 100 docs ---
+    print(f"[INFO] Extracting best passage from {len(candidate_titles)} candidate documents...")
     best_passages_from_docs = []
     pp.info(f"BM25 found candidates: {candidate_titles}. Reranking passages...", indent=8)
-    for title in candidate_titles:
-        passage_text = retrieve_best_passage(title, question, method='cross-encoder')
-        if passage_text:
-            best_passages_from_docs.append((title, passage_text))
     if not best_passages_from_docs: return -1.0, None
-    
+
     pairs = [[question, p_text] for _, p_text in best_passages_from_docs]
     scores = cross_encoder.predict(pairs)
     best_idx = scores.argmax()
     return scores[best_idx].item(), best_passages_from_docs[best_idx]
+
+
+# --- NEW: Reranking function for Step 2 ---
+def rerank_passages(question: str, passages_to_rerank: List[Tuple[str, str]], top_k: int) -> List[Tuple[str, str]]:
+    """Reranks a list of passages using CrossEncoder and returns the top_k."""
+    if not passages_to_rerank:
+        return []
+
+    print(f"[INFO] Reranking {len(passages_to_rerank)} passages to select top {top_k}...")
+    pairs = [[question, p_text] for _, p_text in passages_to_rerank]
+    scores = cross_encoder.predict(pairs)
+
+    scored_passages = list(zip(passages_to_rerank, scores))
+    sorted_passages = sorted(scored_passages, key=lambda x: x[1], reverse=True)
+
+    return [passage for passage, score in sorted_passages[:top_k]]
+
+
+# --- NEW: Orchestrator for the new multi-stage retrieval process ---
+def find_next_passage_multistage(current_state: QuestionState, current_titles_used: Set[str]) -> Tuple[
+    float, Tuple[str, str]]:
+    """
+    Orchestrates a three-stage process to find the next best passage for expansion.
+    1.  BM25 Retrieval: Fetch top 100 documents.
+    2.  Reranking: Extract best passage from each and rerank to get top 10.
+    3.  LLM Selection: Use LLM to choose the single best passage from the top 10.
+    """
+    question = current_state.question
+
+    # --- Step 1: BM25 Retrieval ---
+    print(f"\n[INFO] Step 1: Performing BM25 retrieval for 100 documents based on: \"{question[:100]}...\"")
+    retrieved_docs = retrieve_passages_with_bm25(question, es, ES_INDEX_NAME, size=100)
+
+    unique_titles = list(dict.fromkeys([title for title, _ in retrieved_docs]))
+    candidate_titles = [title for title in unique_titles if title not in current_titles_used]
+
+    if not candidate_titles:
+        print("[INFO] Step 1: BM25 found no new documents.")
+        return -1.0, None
+
+    # --- Intermediate Step: Extract best passage from each candidate doc ---
+    print(f"[INFO] Extracting best passage from {len(candidate_titles)} candidate documents...")
+    best_passages_from_docs = []
+    # Use tqdm for this potentially long step
+    for title in tqdm(candidate_titles, desc="Extracting Passages"):
+        passage_text = retrieve_best_passage(title, question, method='cross-encoder')
+        if passage_text:
+            best_passages_from_docs.append((title, passage_text))
+
+    if not best_passages_from_docs:
+        print("[INFO] Step 2: No relevant passages found in BM25 results.")
+        return -1.0, None
+
+    # --- Step 2: Rerank to get Top 10 Passages ---
+    top_10_passages = rerank_passages(question, best_passages_from_docs, top_k=10)
+
+    if not top_10_passages:
+        print("[INFO] Step 2: Reranking yielded no passages.")
+        return -1.0, None
+
+    # --- Step 3: LLM Selection from Top 10 ---
+    print("[INFO] Step 3: Using LLM to select the final best passage from top 10.")
+    return llm_select_next_passage_with_score(current_state, top_10_passages, chat_for_eval)
 
 
 # --- DEBUGGING CHANGE: Added logging to the parser ---
@@ -224,10 +280,8 @@ def parse_generated_text(text: str) -> List[dict]:
 # --- MAIN LOGIC (Fully Merged & Upgraded) ---
 # ==============================================================================
 def main():
-    args = get_args()
-    pp.header(f"INITIALIZING PIPELINE (Retrieval: {args.retrieval_method.upper()})")
-    if not es and args.retrieval_method == 'bm25':
-        pp.warning("BM25 retrieval method selected, but cannot connect to Elasticsearch. Exiting.")
+    if not es:
+        print("Cannot proceed without an Elasticsearch connection. Exiting.")
         return
 
     # --- Load and Merge Data ---
@@ -251,8 +305,7 @@ def main():
                 if title and title not in existing:
                     fever_data[query]["wiki_urls"].append(title)
                     existing.add(title)
-    
-    fever_data = dict(islice(fever_data.items(), 7)) # Limit for testing
+    fever_data = dict(islice(fever_data.items(), 2))
     print(f"Processing {len(fever_data)} FEVER entries...\n")
 
     for record in tqdm(list(fever_data.values())):
@@ -291,15 +344,10 @@ def main():
             )
             all_generated_questions.append(initial_state)
             pp.success(f"Generated 1-hop Seed -> {initial_state.question}", indent=2)
-            
-            score, next_best_passage = -1.0, None
+
             current_titles_used = {initial_passage_tuple[0]}
-            if args.retrieval_method == 'llm':
-                new_remaining = [p for p in candidate_passages if p[0] not in current_titles_used]
-                if new_remaining:
-                    score, next_best_passage = llm_select_next_passage_with_score(initial_state, new_remaining, chat_for_eval)
-            else: # bm25
-                score, next_best_passage = find_next_best_passage_bm25_and_rerank(initial_state.question, current_titles_used)
+            # Use the new multi-stage retrieval for seeding the PQ
+            score, next_best_passage = find_next_passage_multistage(initial_state, current_titles_used)
 
             if next_best_passage:
                 heapq.heappush(pqs[0], (-score, next(tie_breaker), initial_state, next_best_passage))
@@ -327,6 +375,7 @@ def main():
             passage_texts = [text for _, text in all_passage_tuples]
             multihop_text = generate_multihop_questions(passage_texts)
             parsed_multihop = parse_generated_text(multihop_text)
+            print(parsed_multihop)
             if not parsed_multihop: continue
 
             for item in parsed_multihop:
@@ -355,36 +404,29 @@ def main():
                     next_pq_index = new_hop_count - 1
                     if next_pq_index < MAX_CANDIDATE_DOCS:
                         current_titles_used = {title for title, _ in new_state.passages_used}
-                        if args.retrieval_method == 'llm':
-                            new_remaining = [p for p in candidate_passages if p[0] not in current_titles_used]
-                            if new_remaining:
-                                score, next_best_passage = llm_select_next_passage_with_score(new_state, new_remaining, chat_for_eval)
-                                if next_best_passage:
-                                    pp.info(f"Queuing for next expansion (Confidence: {score:.1f}/5)", indent=8)
-                                    heapq.heappush(pqs[next_pq_index], (-score, next(tie_breaker), new_state, next_best_passage))
-                        else: # bm25
-                            score, next_best_passage = find_next_best_passage_bm25_and_rerank(new_state.question, current_titles_used)
-                            if next_best_passage:
-                                pp.info(f"Queuing for next expansion (BM25 Score: {score:.4f})", indent=8)
-                                heapq.heappush(pqs[next_pq_index], (-score, next(tie_breaker), new_state, next_best_passage))
-                
+
+                        # Use the new multi-stage retrieval for expansion
+                        score, next_best_passage = find_next_passage_multistage(new_state, current_titles_used)
+
+                        if next_best_passage:
+                            pp.info(f"Queuing for next expansion (Confidence: {score:.1f}/5)", indent=8)
+                            heapq.heappush(pqs[next_pq_index],
+                                           (-score, next(tie_breaker), new_state, next_best_passage))
+
                 elif new_hop_count == previous_hop_count and new_passages_set != previous_passages_set:
                     pp.success(f"Transformation successful! Passages shifted. Re-queuing at {previous_hop_count}-hops.", indent=6)
                     current_pq_index = previous_hop_count - 1
                     if current_pq_index < MAX_CANDIDATE_DOCS:
                         current_titles_used = {title for title, _ in new_state.passages_used}
-                        if args.retrieval_method == 'llm':
-                            new_remaining = [p for p in candidate_passages if p[0] not in current_titles_used]
-                            if new_remaining:
-                                score, next_best_passage = llm_select_next_passage_with_score(new_state, new_remaining, chat_for_eval)
-                                if next_best_passage:
-                                    pp.info(f"Re-queuing for next expansion (Confidence: {score:.1f}/5)", indent=8)
-                                    heapq.heappush(pqs[current_pq_index], (-score, next(tie_breaker), new_state, next_best_passage))
-                        else: # bm25
-                            score, next_best_passage = find_next_best_passage_bm25_and_rerank(new_state.question, current_titles_used)
-                            if next_best_passage:
-                                pp.info(f"Re-queuing for next expansion (BM25 Score: {score:.4f})", indent=8)
-                                heapq.heappush(pqs[current_pq_index], (-score, next(tie_breaker), new_state, next_best_passage))
+
+                        # Use the new multi-stage retrieval for expansion
+                        score, next_best_passage = find_next_passage_multistage(new_state, current_titles_used)
+
+                        if next_best_passage:
+                            pp.info(f"Queuing for next expansion (Confidence: {score:.1f}/5)", indent=8)
+                            heapq.heappush(pqs[next_pq_index],
+                                           (-score, next(tie_breaker), new_state, next_best_passage))
+
                 else:
                     pp.warning(f"Expansion failed. Complexity did not increase or change. Discarding.", indent=6)
 
@@ -425,6 +467,7 @@ def main():
 def calculate_metrics():
     # This function is the same as the previous version and remains compatible.
     # It reads the generalized output format and calculates metrics.
+
     total_questions, hop_counts = 0, {}
     verdict_counts = {"requires_all": 0, "subset": 0, "not_answerable": 0, "error": 0}
     naturalness_keys = ["clear_single_question_score", "combines_passages_score", "requires_both_score",
