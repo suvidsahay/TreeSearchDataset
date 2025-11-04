@@ -2,7 +2,8 @@
 
 import json
 from langchain_openai import ChatOpenAI
-from langchain.schema import HumanMessage
+from langchain_core.messages.human import HumanMessage, HumanMessageChunk
+#from langchain.schema import HumanMessage
 import os
 from typing import List, Tuple
 
@@ -57,6 +58,72 @@ Respond ONLY with a valid JSON object in the format:
         return {"objectivity_score": None, "objectivity_justification": "Objectivity parsing error."}
 
 # --- CONSOLIDATED EVALUATION FUNCTIONS ---
+
+
+def evaluate_question_naturalness_dynamic(question: str, passages: List[str], chat_model):
+    """
+    Asks an LLM to dynamically score a question's naturalness based on N passages.
+    """
+    print(f"   - Evaluating question naturalness for {len(passages)}-hops...")
+    num_passages = len(passages)
+
+    # Dynamically change the criteria text based on the number of passages
+    combines_passages_text = f"Combines Facts from All {num_passages} Passages"
+    requires_all_text = f"No Subset of Passages Is Enough"
+
+    eval_prompt = f"""You are an expert in evaluating multi-hop question quality. Evaluate the following question based on the {num_passages} passages it was generated from.
+
+CRITERIA (Score 1-5):
+1.  **One Clear Question:** Is this a single, clear question, not multiple questions joined by "and"?
+2.  **{combines_passages_text}:** Does the question meaningfully require information from ALL {num_passages} passages?
+3.  **{requires_all_text}:** Can the question be answered using a smaller subset of the passages? (If yes, score lower).
+4.  **Logical Dependency:** Are the facts from the passages logically chained together in a reasoning path?
+5.  **HotpotQA-Style Reasoning:** Does the question require complex reasoning across multiple facts, typical of the HotpotQA benchmark?
+6.  **Objectivity:** Is the question fact-based and answerable without speculation?
+
+EXAMPLE OF A GOOD 3-HOP QUESTION:
+- Passages: [About Paris], [About the Louvre], [About the Mona Lisa]
+- Question: "In which country is the museum that houses the Mona Lisa located?"
+- Justification: This is excellent. It requires finding the Mona Lisa's location (Louvre) from P3, finding the Louvre's city (Paris) from P2, and finding Paris's country (France) from P1. This is a perfect A->B->C logical chain.
+
+---
+Now, evaluate the following question using the criteria above.
+
+Question: "{question}"
+
+Return your answer as a valid JSON object in this exact format, using the dynamic key names:
+{{
+  "clear_single_question_score": <1-5>,
+  "combines_passages_score": <1-5>,
+  "requires_all_passages_score": <1-5>,
+  "logical_dependency_score": <1-5>,
+  "hotpot_style_score": <1-5>,
+  "objectivity_score": <1-5>,
+  "justification": "<one short explanation for your scores>"
+}}
+"""
+
+    response = chat_model.invoke([HumanMessage(content=eval_prompt)])
+    try:
+        json_start = response.content.find('{')
+        json_end = response.content.rfind('}') + 1
+        json_data = response.content[json_start:json_end]
+        return json.loads(json_data)
+    except Exception as e:
+        print(f"CRITICAL PARSING ERROR in dynamic naturalness evaluation: {e}")
+        # Return a structure with None values on error
+        return {
+            "clear_single_question_score": None, "combines_passages_score": None,
+            "requires_all_passages_score": None, "logical_dependency_score": None,
+            "hotpot_style_score": None, "objectivity_score": None,
+            "justification": "Evaluation parsing error."
+        }
+
+
+
+
+
+
 
 def evaluate_question_naturalness(question, chat_model):
     """Asks the LLM to score the question across 6 task-specific dimensions."""
@@ -317,6 +384,47 @@ Your response (e.g., "Correct_C_passage"):
     except Exception as e:
         print(f"CRITICAL PARSING ERROR in verification3: {e}")
         return {"answer": f"Comparison Parsing Error: {final_response.content}"}
+
+def verify_question_N_docs(passages: List[str], question: str, ground_truth_answer: str) -> dict:
+  """Verifies if a question is answerable using subsets of the provided N passages."""
+  if not passages:
+    return {"verification_error": "No passages provided"}
+
+  passage_labels = [f"Passage_{i + 1}" for i in range(len(passages))]
+  passage_text = "\n\n".join([f"{label}: \"{text}\"" for label, text in zip(passage_labels, passages)])
+  num_passages = len(passages)
+  all_subsets = [list(itertools.combinations(range(num_passages), i)) for i in range(1, num_passages + 1)]
+  subset_prompts = [f"Subset {i + 1} ({', '.join([passage_labels[j] for j in subset])})" for i, subsets_at_level in
+           enumerate(all_subsets) for subset in subsets_at_level]
+
+  prompt = f"""
+  You are given a question, a ground truth answer, and {num_passages} passages.
+  For each of the following subsets of passages, determine if you can fully answer the question.
+  Respond with only "Yes" or "No".
+
+  Question: "{question}"
+  Ground Truth Answer: "{ground_truth_answer}"
+
+  {passage_text}
+  ---
+  Analysis Tasks:
+  {chr(10).join(subset_prompts)}
+  """
+  response = chat_for_eval.invoke(prompt)
+  results = response.content.strip().split('\n')
+  verification_details = {f"answerable_with_{prompt}": "yes" in res.lower() for prompt, res in
+              zip(subset_prompts, results) if res}
+
+  answerable_full_set = list(verification_details.values())[-1] if verification_details else False
+  answerable_smaller_set = any(list(verification_details.values())[:-1]) if len(verification_details) > 1 else False
+
+  final_verdict = {
+    "requires_all_passages": answerable_full_set and not answerable_smaller_set,
+    "answerable_with_subset": answerable_full_set and answerable_smaller_set,
+    "not_answerable": not answerable_full_set,
+    "verification_details": verification_details
+  }
+  return final_verdict
 
 
 def verify_question_final(documents: list[str], question: str, ground_truth_answer: str) -> dict:
