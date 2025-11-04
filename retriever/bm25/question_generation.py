@@ -1,7 +1,9 @@
 import os
 import re
 from langchain_openai import ChatOpenAI
-from langchain.schema import HumanMessage
+from langchain_core.messages.human import HumanMessage, HumanMessageChunk
+#from langchain_core.messages import HumanMesaage
+#from langchain.schema import HumanMessage
 
 def load_openai_key():
     if not os.getenv("OPENAI_API_KEY"):
