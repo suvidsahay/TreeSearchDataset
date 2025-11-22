@@ -5,6 +5,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages.human import HumanMessage, HumanMessageChunk
 
 import os
+import itertools
 from typing import List, Tuple
 
 # --- HELPER FUNCTIONS ---
@@ -410,7 +411,9 @@ def verify_question_N_docs(passages: List[str], question: str, ground_truth_answ
   Analysis Tasks:
   {chr(10).join(subset_prompts)}
   """
-  response = chat_for_eval.invoke(prompt)
+
+  chat = ChatOpenAI(temperature=0, model_name="gpt-4o-mini", openai_api_key=os.getenv("OPENAI_API_KEY"))
+  response = chat.invoke(prompt)
   results = response.content.strip().split('\n')
   verification_details = {f"answerable_with_{prompt}": "yes" in res.lower() for prompt, res in
               zip(subset_prompts, results) if res}

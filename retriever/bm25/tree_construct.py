@@ -26,7 +26,8 @@ from retriever import (
 from question_generation import (
     load_openai_key,
     generate_seed_questions,
-    generate_multihop_questions
+    generate_multihop_questions,
+    revise_question
 )
 from verification3 import (
     evaluate_question_naturalness_dynamic,
@@ -55,6 +56,24 @@ class PrettyPrinter:
 
 pp = PrettyPrinter()
 
+def print_pqs_debug(pqs: List[List[tuple]]):
+    """Visually prints the state of all priority queues for debugging."""
+    print("\n" + "=" * 25 + " DEBUG: PRIORITY QUEUE STATE " + "=" * 25)
+    for i, pq in enumerate(pqs):
+        print(f"\n--- PQ {i} (Contains {i + 1}-hop questions")
+        if not pq:
+            print("[EMPTY]")
+            continue
+        sorted_pq = sorted(pq, key=lambda x: x[0], reverse=False)
+        for neg_score, _, state, passage_to_add in sorted_pq:
+            score = -neg_score
+            question_preview = state.question
+            print(f"  - Candidate Score: {score:.4f}")
+            print(f"    - Current Question: \"{question_preview}\"")
+            print(f"    - Passages Used: {[p[0] for p in state.passages_used]}")
+            print(f"    - -> Next Passage to Add: '{passage_to_add[0]}'")
+    print("=" * 75 + "\n")
+
 # --- Configuration & Global Initializations ---
 load_openai_key()
 FILE1 = "filtered_fever_with_wiki_updated.jsonl"
@@ -63,6 +82,7 @@ OUTPUT_FILE = "results_iterative.jsonl"
 K_ITERATIONS = 10
 MAX_CANDIDATE_DOCS = 6
 ES_INDEX_NAME = "fever"
+MAX_REVISIONS = 5
 
 cross_encoder = CrossEncoder('cross-encoder/ms-marco-MiniLM-L6-v2')
 chat_for_eval = ChatOpenAI(temperature=0, model_name="gpt-4o", openai_api_key=os.getenv("OPENAI_API_KEY"))
@@ -351,11 +371,10 @@ def main():
 
             if next_best_passage:
                 heapq.heappush(pqs[0], (-score, next(tie_breaker), initial_state, next_best_passage))
-
+        print_pqs_debug(pqs)
         pp.step("Step 5: Starting iterative expansion process...")
         for iteration_num in range(K_ITERATIONS):
             print("\n" + "─" * 30 + f" Iteration {iteration_num + 1}/{K_ITERATIONS} " + "─" * 30)
-
             best_candidate_peek, best_pq_index = None, -1
             for i, pq in enumerate(pqs):
                 if not pq: continue
@@ -366,6 +385,7 @@ def main():
                 pp.warning("All priority queues are empty. Stopping expansions.", indent=2)
                 break
 
+
             neg_score, _, prev_state, passage_to_add = heapq.heappop(pqs[best_pq_index])
             pp.info(f"Expanding best candidate from PQ-{best_pq_index} (Score: {-neg_score:.4f})", indent=2)
             pp.print_question_state(prev_state, indent=4)
@@ -375,60 +395,109 @@ def main():
             passage_texts = [text for _, text in all_passage_tuples]
             multihop_text = generate_multihop_questions(passage_texts)
             parsed_multihop = parse_generated_text(multihop_text)
-            print(parsed_multihop)
+            # print(parsed_multihop)
             if not parsed_multihop: continue
 
             for item in parsed_multihop:
-                pp.step("Evaluating naturalness of new candidate question...", indent=4)
-                naturalness_details = evaluate_question_naturalness_dynamic(item["question"], passage_texts, chat_for_eval)
-                LOGICAL_DEPENDENCY_THRESHOLD = 3
-                if naturalness_details.get("logical_dependency_score", 0) <= LOGICAL_DEPENDENCY_THRESHOLD:
-                    pp.warning(f"Quality gate failed. Logical dependency score was too low. Discarding.", indent=6)
-                    continue
-                pp.success(f"Quality gate passed.", indent=6)
+                if not item: continue
+                if not item.get("question"): continue
+                revision_attempts = 0
+                is_successful = False
 
-                minimal_passages_used = get_required_passages(item["question"], item["answer"], all_passage_tuples)
+                new_hop_count = None
+                minimal_passages_used = None
+                item_to_process = item
+
+                while revision_attempts < MAX_REVISIONS and not is_successful:
+
+
+                    # 1. Evaluate current item_to_process
+                    minimal_passages_used = get_required_passages(item_to_process["question"],
+                                                                  item_to_process["answer"], all_passage_tuples)
+
+                    previous_passages_set = {title for title, _ in prev_state.passages_used}
+                    new_passages_set = {title for title, _ in minimal_passages_used}
+                    new_hop_count = len(new_passages_set)
+                    previous_hop_count = len(previous_passages_set)
+
+                    is_successful_expansion = new_hop_count > previous_hop_count
+                    # is_successful_transformation = (
+                    #             new_hop_count == previous_hop_count and new_passages_set != previous_passages_set)
+
+                    # --- Proceed with Successful (Original or Revised) Question ---
+                    pp.step("Evaluating naturalness of final question...", indent=4)
+                    naturalness_details = evaluate_question_naturalness_dynamic(item["question"], passage_texts,
+                                                                                chat_for_eval)
+                    LOGICAL_DEPENDENCY_THRESHOLD = 3
+                    if naturalness_details.get("logical_dependency_score", 0) <= LOGICAL_DEPENDENCY_THRESHOLD:
+                        pp.warning(
+                            f"Quality gate failed. Logical dependency score was too low ({naturalness_details.get('logical_dependency_score')}/5). Discarding.",
+                            indent=6)
+                    else:
+                        pp.success(f"Quality gate passed.", indent=6)
+                        is_successful_expansion = is_successful_expansion and True
+
+                    if is_successful_expansion:
+                        is_successful = True
+                        break  # Success, exit while loop
+
+                    # If failed, attempt revision
+                    pp.warning(
+                        f"Expansion failed for question: {item_to_process['question']} "
+                        f"on Attempt {revision_attempts + 1}/{MAX_REVISIONS}. Triggering revision.",
+                        indent=4)
+
+                    # --- Call Revision Method ---
+                    revision_text = revise_question(passage_texts, item_to_process, minimal_passages_used, naturalness_details)
+                    parsed_revision = parse_generated_text(revision_text)
+
+                    pp.info(f"Revision: {parsed_revision}", indent=2)
+
+                    if parsed_revision:
+                        item_to_process = parsed_revision[0]  # Use the revised output for the next attempt
+                        revision_attempts += 1
+                    else:
+                        pp.warning(
+                            "Revision generation failed (Parse error). Stopping revision attempts for this branch.",
+                            indent=4)
+                        break  # Stop, item remains unsuccessful
+
+                # --- After the while loop, check final status ---
+                if not is_successful:
+                    pp.warning(f"All {MAX_REVISIONS} revision attempts failed. Discarding expansion path.", indent=4)
+                    continue  # Skip to the next candidate
+
+                # Assign the final, successful item and related values from the last successful check
+                item = item_to_process
+                new_hop_count_final = new_hop_count
+                minimal_passages_used_final = minimal_passages_used
+
                 new_state = QuestionState(
                     question=item["question"], explanation=item["explanation"],
-                    answer=item["answer"], passages_used=minimal_passages_used
+                    answer=item["answer"], passages_used=minimal_passages_used_final  # Use final verified passages
                 )
                 all_generated_questions.append(new_state)
 
-                previous_passages_set = {title for title, _ in prev_state.passages_used}
-                new_passages_set = {title for title, _ in new_state.passages_used}
-                new_hop_count = len(new_passages_set)
-                previous_hop_count = len(previous_passages_set)
-
-                if new_hop_count > previous_hop_count:
-                    pp.success(f"Expansion successful! Hops increased from {previous_hop_count} to {new_hop_count}.", indent=6)
-                    next_pq_index = new_hop_count - 1
-                    if next_pq_index < MAX_CANDIDATE_DOCS:
-                        current_titles_used = {title for title, _ in new_state.passages_used}
-
-                        # Use the new multi-stage retrieval for expansion
-                        score, next_best_passage = find_next_passage_multistage(new_state, current_titles_used)
-
-                        if next_best_passage:
-                            pp.info(f"Queuing for next expansion (Confidence: {score:.1f}/5)", indent=8)
-                            heapq.heappush(pqs[next_pq_index],
-                                           (-score, next(tie_breaker), new_state, next_best_passage))
-
-                elif new_hop_count == previous_hop_count and new_passages_set != previous_passages_set:
-                    pp.success(f"Transformation successful! Passages shifted. Re-queuing at {previous_hop_count}-hops.", indent=6)
-                    current_pq_index = previous_hop_count - 1
-                    if current_pq_index < MAX_CANDIDATE_DOCS:
-                        current_titles_used = {title for title, _ in new_state.passages_used}
-
-                        # Use the new multi-stage retrieval for expansion
-                        score, next_best_passage = find_next_passage_multistage(new_state, current_titles_used)
-
-                        if next_best_passage:
-                            pp.info(f"Queuing for next expansion (Confidence: {score:.1f}/5)", indent=8)
-                            heapq.heappush(pqs[next_pq_index],
-                                           (-score, next(tie_breaker), new_state, next_best_passage))
-
+                if is_successful_expansion:
+                    pp.success(f"Expansion successful! Hops increased to {new_hop_count_final}.", indent=6)
                 else:
-                    pp.warning(f"Expansion failed. Complexity did not increase or change. Discarding.", indent=6)
+                    pp.success(f"Transformation successful! Hops maintained at {new_hop_count_final}.", indent=6)
+
+                next_pq_index = new_hop_count_final - 1
+                if next_pq_index < MAX_CANDIDATE_DOCS:
+                    current_titles_used = {title for title, _ in new_state.passages_used}
+
+                    # Use the new multi-stage retrieval for the next expansion
+                    score, next_best_passage = find_next_passage_multistage(new_state, current_titles_used)
+
+                    if next_best_passage:
+                        pp.info(f"Queuing for next expansion (Confidence: {score:.1f}/5) to PQ[{next_pq_index}]",
+                                indent=8)
+                        heapq.heappush(pqs[next_pq_index],
+                                       (-score, next(tie_breaker), new_state, next_best_passage))
+                    else:
+                        pp.warning("Could not find next passage. Ending branch.", indent=8)
+            print_pqs_debug(pqs)
 
         # --- Final Analysis ---
         pp.header("FINAL ANALYSIS")

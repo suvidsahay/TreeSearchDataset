@@ -29,7 +29,7 @@ Document 1:
 {doc1}
 ---
 
-For each question you generate, you MUST provide the question, a brief explanation of the "hook" entity, and the ground truth answer. Use the following format exactly:
+For each question you generate, you MUST provide the question, a brief explanation of the "hook" entity, and the ground truth answer. Use the following format exactly and separate each question explanation answer by \"---\":
 Question: [Your question here]
 Explanation: [Identify the key entity in your question that can link to other topics.]
 Answer: [The ground truth answer to your question]
@@ -120,7 +120,7 @@ Document 2:
     return response.content
 
 
-def generate_multihop_questions(documents: list, num_questions=1): # Reduced default to 1 for quality
+def generate_multihop_questions(documents: list, num_questions=3):
     """
     Generates multi-hop questions that require combining information from all provided passages.
     This function is generalized to handle n passages.
@@ -162,7 +162,7 @@ Use the following format exactly:
 Question: [Your question here]
 Explanation: [Your one-sentence explanation of the logical reasoning chain]
 Answer: [The ground truth answer to your question]
----
+--- (Use this to split '---' each question, explanation, answer triplet in between)
 
 Here are the documents to use:
 ---
@@ -177,4 +177,76 @@ Here are the documents to use:
     for i, doc in enumerate(documents):
         print(f"Document {i + 1} snippet: {doc[:100]}...")
 
+    return response.content
+
+
+def revise_question(documents: list, failed_question_data: Dict[str, str], minimal_passages_used: List[Tuple[str, str]],
+                    naturalness_details: Dict) -> str:
+    """
+    Refines a previously generated question that failed to increase hop complexity.
+
+    Args:
+        documents (list): The list of all passage texts (all_passage_tuples) that were available for the question.
+        failed_question_data (Dict[str, str]): The question, explanation, and answer of the failed attempt.
+        minimal_passages_used (List[Tuple[str, str]]): The list of passages (title, text) that were ACTUALLY required by the verification step.
+        naturalness_details (Dict): The quality scores (e.g., logical dependency) from the previous question attempt.
+    """
+    num_docs = len(documents)
+    formatted_docs = [f"Document {i + 1}:\n{doc}" for i, doc in enumerate(documents)]
+    documents_section = "\n\n---\n\n".join(formatted_docs)
+
+    # Information about the failed question
+    original_q = failed_question_data.get("question", "N/A")
+    original_e = failed_question_data.get("explanation", "N/A")
+
+    # Information about the minimal passages actually used for the prompt feedback
+    used_titles = [title for title, _ in minimal_passages_used]
+    used_passages_section = "\n".join([f"- '{title}'" for title in used_titles])
+
+    # Extract Naturalness Scores for targeted feedback
+    ld_score = naturalness_details.get("logical_dependency_score", "N/A")
+    combines_score = naturalness_details.get("combines_passages_score", "N/A")
+
+    naturalness_feedback = f"""
+**PREVIOUS ATTEMPT QUALITY SCORES (Out of 5.0):**
+- Logical Dependency Score: {ld_score}
+- Combines Passages Score: {combines_score}
+
+**ANALYSIS:** Since your score for 'Combines Passages' was low and the question only used {len(minimal_passages_used)} passages, the logical chain was weak.
+"""
+
+    prompt = f"""You previously attempted to generate a complex question using the {num_docs} documents provided below.
+The generated question failed verification because it did NOT require all {num_docs} documents to answer.
+
+{naturalness_feedback}
+
+**CRITICAL FEEDBACK FROM REVIEWER (Hop Count Failure):**
+The original question, "{original_q}", only required {len(minimal_passages_used)} passages to answer.
+The required passages were from the documents titled:
+{used_passages_section}
+
+**YOUR TASK:** REVISE and generate a **NEW, single, high-quality question** that **guarantees** a logical dependency across **ALL {num_docs} documents** (i.e., {num_docs} distinct passages).
+
+**Further Requirements:**
+- The final answer must be a single, objective fact (e.g., a name, number, date).
+- The question must not be a yes/no question.
+- A unique fact must be required from EACH document.
+
+---
+**DOCUMENTS (Targeted for use):**
+{documents_section}
+---
+
+**CRITICAL INSTRUCTIONS FOR REVISION:**
+1.  The NEW question must be phrased such that if any single document ({num_docs} total) is removed, the question cannot be fully answered.
+2.  Ensure the NEW question forces a strong, sequential bridge (improving the Logical Dependency score).
+3.  The output format must be strictly adhered to.
+
+Use the following format exactly for your new attempt:
+Question: [Your NEW, revised question here]
+Explanation: [Your one-sentence explanation of the new logical reasoning chain]
+Answer: [The ground truth answer to your question]
+"""
+    chat = ChatOpenAI(temperature=0.7, model_name="gpt-4o")
+    response = chat.invoke([HumanMessage(content=prompt)])
     return response.content
