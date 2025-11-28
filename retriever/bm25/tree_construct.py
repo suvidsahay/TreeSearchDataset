@@ -4,19 +4,16 @@ import os
 import heapq
 import itertools
 from dataclasses import dataclass, field
-from typing import List, Tuple, Set
+from typing import List, Tuple, Set, Dict
 from itertools import islice
 
 # --- External Library Imports ---
 from tqdm import tqdm
 from elasticsearch import Elasticsearch, ConnectionError
-#from langchain.chat_models.openai import ChatOpenAI
 from langchain_openai import ChatOpenAI
-#from langchain.chat_models import ChatOpenAI
 from sentence_transformers import CrossEncoder
 
 # --- Local Module Imports ---
-# These are kept as imports from separate files as requested.
 from retriever import (
     retrieve_best_passage,
     fetch_wikipedia_page,
@@ -27,6 +24,7 @@ from question_generation import (
     load_openai_key,
     generate_seed_questions,
     generate_multihop_questions,
+    generate_multihop_questions_v2,
     revise_question
 )
 from verification3 import (
@@ -34,45 +32,10 @@ from verification3 import (
     get_required_passages,
     verify_question_N_docs
 )
-
-# ==============================================================================
-# --- MERGED SCRIPT: tree_construct.py ---
-# This file combines the features from both of your provided scripts.
-# ==============================================================================
-
-# --- FEATURE: PrettyPrinter Class for clean logging ---
-class PrettyPrinter:
-    PURPLE = '\033[95m'; CYAN = '\033[96m'; BLUE = '\033[94m'; GREEN = '\033[92m'
-    YELLOW = '\033[93m'; RED = '\033[91m'; ENDC = '\033[0m'; BOLD = '\033[1m'
-    def header(self, text): print(f"\n{self.PURPLE}{self.BOLD}{'=' * 25} {text} {'=' * 25}{self.ENDC}")
-    def info(self, text, indent=0): print(f"{' ' * indent}{self.BLUE}INFO: {text}{self.ENDC}")
-    def success(self, text, indent=0): print(f"{' ' * indent}{self.GREEN}✅ {text}{self.ENDC}")
-    def warning(self, text, indent=0): print(f"{' ' * indent}{self.YELLOW}⚠️ {text}{self.ENDC}")
-    def step(self, text, indent=0): print(f"{' ' * indent}{self.CYAN}➡️  {text}{self.ENDC}")
-    def print_question_state(self, state, indent=0):
-        passage_titles = [f"'{title}'" for title, _ in state.passages_used]
-        print(f"{' ' * indent}❓ {self.BOLD}Q:{self.ENDC} \"{state.question}\"")
-        print(f"{' ' * (indent+2)}{self.YELLOW}Hops:{self.ENDC} {len(state.passages_used)} | {self.YELLOW}Passages:{self.ENDC} {', '.join(passage_titles)}")
+# --- VISUALIZATION IMPORTS ---
+from visualization import HistoryNode, QUESTION_ID_COUNTER, generate_output, PrettyPrinter
 
 pp = PrettyPrinter()
-
-def print_pqs_debug(pqs: List[List[tuple]]):
-    """Visually prints the state of all priority queues for debugging."""
-    print("\n" + "=" * 25 + " DEBUG: PRIORITY QUEUE STATE " + "=" * 25)
-    for i, pq in enumerate(pqs):
-        print(f"\n--- PQ {i} (Contains {i + 1}-hop questions")
-        if not pq:
-            print("[EMPTY]")
-            continue
-        sorted_pq = sorted(pq, key=lambda x: x[0], reverse=False)
-        for neg_score, _, state, passage_to_add in sorted_pq:
-            score = -neg_score
-            question_preview = state.question
-            print(f"  - Candidate Score: {score:.4f}")
-            print(f"    - Current Question: \"{question_preview}\"")
-            print(f"    - Passages Used: {[p[0] for p in state.passages_used]}")
-            print(f"    - -> Next Passage to Add: '{passage_to_add[0]}'")
-    print("=" * 75 + "\n")
 
 # --- Configuration & Global Initializations ---
 load_openai_key()
@@ -98,13 +61,18 @@ except ConnectionError as e:
     print(f"Elasticsearch connection failed: {e}")
     es = None
 
+
 @dataclass
 class QuestionState:
-    question: str; explanation: str; answer: str
+    question: str;
+    explanation: str;
+    answer: str
     passages_used: List[Tuple[str, str]] = field(default_factory=list)
+
     def __str__(self):
         passage_titles = [f"'{title}'" for title, _ in self.passages_used]
         return f"Q: \"{self.question}\" (Hops: {len(self.passages_used)}, Passages: {', '.join(passage_titles)})"
+
 
 # ==============================================================================
 # --- HELPER FUNCTIONS ---
@@ -142,12 +110,26 @@ COMMON ATTRIBUTES:
     except Exception as e:
         print(f"Error during attribute extraction: {e}")
 
+
 def retrieve_passages_with_bm25(query: str, es_client: Elasticsearch, index_name: str, size: int = 100) -> List[
     Tuple[str, str]]:
     """Retrieves top passages from Elasticsearch using BM25."""
     if not es_client:
         print("Elasticsearch client not available. Skipping retrieval.")
         return []
+    request = [{"index": index_name}, {"query": {"match": {"txt": query}}, "size": size}]
+    try:
+        resp = es_client.msearch(body=request)
+    except Exception as e:
+        pp.warning(f"Error during Elasticsearch msearch: {e}")
+        return []
+    docs = []
+    for r in resp.get("responses", []):
+        for hit in r.get("hits", {}).get("hits", []):
+            title = hit["_source"].get("title", "")
+            if title: docs.append((title, fetch_wikipedia_page(title) or ""))
+    return docs
+
 
 def find_anchor_and_bridge_documents(claim: str, wiki_titles: List[str], cache: dict, chat_model, cross_encoder):
     if len(wiki_titles) < 2: return []
@@ -179,8 +161,10 @@ def find_anchor_and_bridge_documents(claim: str, wiki_titles: List[str], cache: 
     final_docs = [(t, s) for t, s in ranked_docs if t == anchor_title or t == best_bridge_title]
     return final_docs
 
+
 # --- FEATURE: Elasticsearch BM25 Retrieval (from file 2) ---
-def retrieve_passages_with_bm25(query: str, es_client: Elasticsearch, index_name: str, size: int = 5) -> List[Tuple[str, str]]:
+def retrieve_passages_with_bm25(query: str, es_client: Elasticsearch, index_name: str, size: int = 5) -> List[
+    Tuple[str, str]]:
     if not es_client:
         pp.warning("Elasticsearch client not available. Skipping retrieval.")
         return []
@@ -197,7 +181,9 @@ def retrieve_passages_with_bm25(query: str, es_client: Elasticsearch, index_name
             if title: docs.append((title, fetch_wikipedia_page(title) or ""))
     return docs
 
-def find_next_best_passage_bm25_and_rerank(question: str, current_titles_used: Set[str]) -> Tuple[float, Tuple[str, str]]:
+
+def find_next_best_passage_bm25_and_rerank(question: str, current_titles_used: Set[str]) -> Tuple[
+    float, Tuple[str, str]]:
     retrieved_docs = retrieve_passages_with_bm25(question, es, ES_INDEX_NAME, size=5)
     unique_titles = list(dict.fromkeys([title for title, _ in retrieved_docs]))
     candidate_titles = [title for title in unique_titles if title not in current_titles_used]
@@ -296,6 +282,7 @@ def parse_generated_text(text: str) -> List[dict]:
     pp.success(f"Successfully parsed {len(parsed_data)} questions.")
     return parsed_data
 
+
 # ==============================================================================
 # --- MAIN LOGIC (Fully Merged & Upgraded) ---
 # ==============================================================================
@@ -313,6 +300,8 @@ def main():
             claim = rec.get("claim")
             urls = [title.replace("_", " ") for title in rec.get("wiki_urls", [])]
             if claim: fever_data[claim] = {"claim": claim, "wiki_urls": list(dict.fromkeys(urls))}
+
+    # FIX: Removed extra parenthesis
     with open(FILE2, 'r') as f2:
         for line in f2:
             if not line.strip(): continue
@@ -325,7 +314,7 @@ def main():
                 if title and title not in existing:
                     fever_data[query]["wiki_urls"].append(title)
                     existing.add(title)
-    fever_data = dict(islice(fever_data.items(), 2))
+    fever_data = dict(islice(fever_data.items(), 1))
     print(f"Processing {len(fever_data)} FEVER entries...\n")
 
     for record in tqdm(list(fever_data.values())):
@@ -337,10 +326,17 @@ def main():
         cache = {title: fetch_wikipedia_page(title) or "" for title in wiki_titles}
         ranked_docs = find_anchor_and_bridge_documents(claim, wiki_titles, cache, chat_for_eval, cross_encoder)
         if len(ranked_docs) < 2:
-           pp.warning("Could not find a valid Anchor/Bridge pair. Skipping claim.", indent=2)
-           continue
+            pp.warning("Could not find a valid Anchor/Bridge pair. Skipping claim.", indent=2)
+            continue
         doc_titles = [title for title, _ in ranked_docs]
         pp.info(f"Using document pair: {doc_titles}", indent=2)
+
+        # --- A. History Tracking Setup ---
+        expansion_history = []
+        # Maps the Python object ID (id(QuestionState)) to a simple string ID ("1", "2")
+        question_state_to_id = {}
+        # Reset the global counter for each new claim (FIXED: Removed 'global' and rely on reassignment)
+        QUESTION_ID_COUNTER = itertools.count(1)
 
         pp.step("Step 2: Retrieving best passage from each document...")
         candidate_passages = []
@@ -365,13 +361,28 @@ def main():
             all_generated_questions.append(initial_state)
             pp.success(f"Generated 1-hop Seed -> {initial_state.question}", indent=2)
 
+            # 1. Assign ID and log the initial state
+            current_q_id = next(QUESTION_ID_COUNTER)
+            question_state_to_id[id(initial_state)] = f"{current_q_id}"
+
+            history_node = HistoryNode(
+                id=f"{current_q_id}",
+                parent_ids=[],  # No parent question
+                question_text=initial_state.question,
+                answer=initial_state.answer,
+                explanation=initial_state.explanation,
+                passages_used=initial_state.passages_used,
+                is_seed=True
+            )
+            expansion_history.append(history_node)
+
             current_titles_used = {initial_passage_tuple[0]}
             # Use the new multi-stage retrieval for seeding the PQ
             score, next_best_passage = find_next_passage_multistage(initial_state, current_titles_used)
 
             if next_best_passage:
                 heapq.heappush(pqs[0], (-score, next(tie_breaker), initial_state, next_best_passage))
-        print_pqs_debug(pqs)
+        pp.print_pqs_debug(pqs)
         pp.step("Step 5: Starting iterative expansion process...")
         for iteration_num in range(K_ITERATIONS):
             print("\n" + "─" * 30 + f" Iteration {iteration_num + 1}/{K_ITERATIONS} " + "─" * 30)
@@ -385,7 +396,6 @@ def main():
                 pp.warning("All priority queues are empty. Stopping expansions.", indent=2)
                 break
 
-
             neg_score, _, prev_state, passage_to_add = heapq.heappop(pqs[best_pq_index])
             pp.info(f"Expanding best candidate from PQ-{best_pq_index} (Score: {-neg_score:.4f})", indent=2)
             pp.print_question_state(prev_state, indent=4)
@@ -394,13 +404,13 @@ def main():
             all_passage_tuples = prev_state.passages_used + [passage_to_add]
             passage_texts = [text for _, text in all_passage_tuples]
             multihop_text = generate_multihop_questions(passage_texts)
+            # multihop_text = generate_multihop_questions_v2(prev_state.question, passage_to_add)
+
             parsed_multihop = parse_generated_text(multihop_text)
-            # print(parsed_multihop)
             if not parsed_multihop: continue
 
             for item in parsed_multihop:
-                if not item: continue
-                if not item.get("question"): continue
+                if not item or not item.get("question"): continue
                 revision_attempts = 0
                 is_successful = False
 
@@ -410,8 +420,7 @@ def main():
 
                 while revision_attempts < MAX_REVISIONS and not is_successful:
 
-
-                    # 1. Evaluate current item_to_process
+                    # --- 1. Evaluate current item_to_process (Hop Count) ---
                     minimal_passages_used = get_required_passages(item_to_process["question"],
                                                                   item_to_process["answer"], all_passage_tuples)
 
@@ -421,37 +430,36 @@ def main():
                     previous_hop_count = len(previous_passages_set)
 
                     is_successful_expansion = new_hop_count > previous_hop_count
-                    # is_successful_transformation = (
-                    #             new_hop_count == previous_hop_count and new_passages_set != previous_passages_set)
 
-                    # --- Proceed with Successful (Original or Revised) Question ---
-                    pp.step("Evaluating naturalness of final question...", indent=4)
-                    naturalness_details = evaluate_question_naturalness_dynamic(item["question"], passage_texts,
+                    # --- 2. Evaluate Naturalness (Quality Gate) ---
+                    pp.step("Evaluating naturalness of candidate question...", indent=4)
+                    naturalness_details = evaluate_question_naturalness_dynamic(item_to_process["question"],
+                                                                                passage_texts,
                                                                                 chat_for_eval)
                     LOGICAL_DEPENDENCY_THRESHOLD = 3
-                    if naturalness_details.get("logical_dependency_score", 0) <= LOGICAL_DEPENDENCY_THRESHOLD:
-                        pp.warning(
-                            f"Quality gate failed. Logical dependency score was too low ({naturalness_details.get('logical_dependency_score')}/5). Discarding.",
-                            indent=6)
-                    else:
-                        pp.success(f"Quality gate passed.", indent=6)
-                        is_successful_expansion = is_successful_expansion and True
 
-                    if is_successful_expansion:
+                    passes_quality_gate = naturalness_details.get("logical_dependency_score",
+                                                                  0) > LOGICAL_DEPENDENCY_THRESHOLD
+
+                    # A question is successful if it expands the hop count AND passes the quality gate.
+                    if is_successful_expansion and passes_quality_gate:
+                        pp.success(f"Quality gate passed. Hops increased.", indent=6)
                         is_successful = True
                         break  # Success, exit while loop
 
                     # If failed, attempt revision
                     pp.warning(
                         f"Expansion failed for question: {item_to_process['question']} "
-                        f"on Attempt {revision_attempts + 1}/{MAX_REVISIONS}. Triggering revision.",
+                        f"on Attempt {revision_attempts + 1}/{MAX_REVISIONS}. Triggering revision. (Hops: {is_successful_expansion}, Quality: {passes_quality_gate})",
                         indent=4)
 
                     # --- Call Revision Method ---
-                    revision_text = revise_question(passage_texts, item_to_process, minimal_passages_used, naturalness_details)
+                    # We pass the minimal passages used and the naturalness scores to guide the revision
+                    revision_text = revise_question(passage_texts, item_to_process, minimal_passages_used,
+                                                    naturalness_details)
                     parsed_revision = parse_generated_text(revision_text)
 
-                    pp.info(f"Revision: {parsed_revision}", indent=2)
+                    pp.info(f"Revision result: {parsed_revision}", indent=2)
 
                     if parsed_revision:
                         item_to_process = parsed_revision[0]  # Use the revised output for the next attempt
@@ -478,10 +486,24 @@ def main():
                 )
                 all_generated_questions.append(new_state)
 
-                if is_successful_expansion:
-                    pp.success(f"Expansion successful! Hops increased to {new_hop_count_final}.", indent=6)
-                else:
-                    pp.success(f"Transformation successful! Hops maintained at {new_hop_count_final}.", indent=6)
+                # 2. Log the successful expansion step
+                new_q_id = next(QUESTION_ID_COUNTER)
+                parent_q_id = question_state_to_id[id(prev_state)]
+
+                history_node = HistoryNode(
+                    id=f"{new_q_id}",
+                    parent_ids=[parent_q_id],
+                    question_text=new_state.question,
+                    answer=new_state.answer,
+                    explanation=new_state.explanation,
+                    passages_used=new_state.passages_used,
+                    is_seed=False
+                )
+                expansion_history.append(history_node)
+                question_state_to_id[id(new_state)] = f"{new_q_id}"
+
+                pp.success(f"Expansion successful! Hops increased to {new_hop_count_final}. Logging as Q{new_q_id}",
+                           indent=6)
 
                 next_pq_index = new_hop_count_final - 1
                 if next_pq_index < MAX_CANDIDATE_DOCS:
@@ -497,7 +519,7 @@ def main():
                                        (-score, next(tie_breaker), new_state, next_best_passage))
                     else:
                         pp.warning("Could not find next passage. Ending branch.", indent=8)
-            print_pqs_debug(pqs)
+            pp.print_pqs_debug(pqs)
 
         # --- Final Analysis ---
         pp.header("FINAL ANALYSIS")
@@ -505,31 +527,43 @@ def main():
             pp.warning("No questions were generated.", indent=2)
             continue
         best_question = max(all_generated_questions, key=lambda q: len(q.passages_used), default=None)
+
+        # RENDER THE TREE
+        generate_output(claim, expansion_history)
+
         if best_question and len(best_question.passages_used) > 1:
             pp.success(f"Pipeline finished. Best question found has {len(best_question.passages_used)} hops.", indent=2)
             pp.step("Final Question Details:")
             pp.print_question_state(best_question, indent=2)
             pp.step("Performing Final Verification...")
             final_passages_text = [p_text for _, p_text in best_question.passages_used]
-            verification_details = verify_question_N_docs(final_passages_text, best_question.question, best_question.answer)
-            verdict = "Requires All Passages" if verification_details.get("requires_all_passages") else "Answerable by Subset" if verification_details.get("answerable_with_subset") else "Not Answerable"
+            verification_details = verify_question_N_docs(final_passages_text, best_question.question,
+                                                          best_question.answer)
+            verdict = "Requires All Passages" if verification_details.get(
+                "requires_all_passages") else "Answerable by Subset" if verification_details.get(
+                "answerable_with_subset") else "Not Answerable"
             pp.success(f"Verdict: {verdict}", indent=2)
             pp.step("Performing Final Naturalness Evaluation...")
-            naturalness_details = evaluate_question_naturalness_dynamic(best_question.question, final_passages_text, chat_for_eval)
+            naturalness_details = evaluate_question_naturalness_dynamic(best_question.question, final_passages_text,
+                                                                        chat_for_eval)
             if naturalness_details:
                 for key, value in naturalness_details.items():
                     if key != "justification": print(f"{' ' * 4}{key:<30} {value or 'N/A'}/5.0")
                 print(f"{' ' * 4}{'justification':<30} {naturalness_details.get('justification')}")
-            log_entry = { "status": "success", "claim": claim, "final_question": best_question.question, "num_hops": len(best_question.passages_used), **verification_details, **naturalness_details }
-            with open(OUTPUT_FILE, 'a') as f_out: json.dump(log_entry, f_out); f_out.write('\n')
+            log_entry = {"status": "success", "claim": claim, "final_question": best_question.question,
+                         "num_hops": len(best_question.passages_used), **verification_details, **naturalness_details}
+            with open(OUTPUT_FILE, 'a') as f_out:
+                json.dump(log_entry, f_out); f_out.write('\n')
         else:
             pp.warning("Pipeline finished but failed to generate a valid multi-hop question.", indent=2)
             if best_question:
                 pp.info("The process ended with this 1-hop question:", indent=4)
                 pp.print_question_state(best_question, indent=4)
-            log_entry = { "status": "failure", "claim": claim, "final_question": best_question.question if best_question else "N/A", "num_hops": len(best_question.passages_used) if best_question else 0 }
-            with open(OUTPUT_FILE, 'a') as f_out: json.dump(log_entry, f_out); f_out.write('\n')
-
+            log_entry = {"status": "failure", "claim": claim,
+                         "final_question": best_question.question if best_question else "N/A",
+                         "num_hops": len(best_question.passages_used) if best_question else 0}
+            with open(OUTPUT_FILE, 'a') as f_out:
+                json.dump(log_entry, f_out); f_out.write('\n')
 
 
 # --- Metrics Calculation Section ---

@@ -179,6 +179,77 @@ Here are the documents to use:
 
     return response.content
 
+def generate_multihop_questions_v2(original_question, new_passage, num_questions=3):
+    """
+    Generates a third bridging question that requires both the original question's context
+    and the new passage to answer.
+
+    Returns:
+        tuple: (question, explanation, answer)
+    """
+
+    prompt = f"""You are given:
+1. An original question that was created based on two previous documents.
+2. A new passage containing additional information.
+
+Your task is to create {num_questions} new, clear, natural-sounding, fact-based questions
+that requires BOTH:
+· Information from the original question's context.
+· Information from the new passage.
+
+Requirements:
+· The questions must NOT be answerable using only the original question's context or only the new passage.
+· The questions must NOT be unanswerable.
+· The questions must NOT be a yes/no question.
+· The answers must be a single, objective fact explicitly stated in the texts.
+· Use natural phrasing, as if written by a human.
+
+Example of a GOOD question: Original Question: What is the capital of France. Document 2: The Eiffel Tower was completed in 1889. Question: Which famous landmark in the capital of France was completed in 1889?
+
+Examples of BAD questions:
+· What is the capital of France? (Same as the last question)
+· In the year of 1889 completion, what is the landmark that located inside Paris capital of France? (unnatural phrasing)
+· Is the Eiffel Tower located in Paris? (yes/no question)
+
+Important:
+· Do not mention or imply where each fact comes from.
+· Do not assume any relationship between facts unless it is explicitly stated.
+· Ensure that named entities are referred to clearly and unambiguously.
+
+For each question you generate, you MUST provide three things:
+1.  The question itself.
+2.  A brief, one-sentence explanation of the bridge connecting the two documents.
+3.  The ground truth answer to the question, synthesized ONLY from the provided documents.
+Use the following format exactly, with "---" as a separator between questions:
+Question: [Your question here]
+Explanation: [Your one-sentence explanation here]
+Answer: [The ground truth answer to your question]
+---
+
+Question: [Your next question here]
+
+Explanation: [Your next explanation here]
+
+Answer: [The ground truth answer to your next question]
+
+---
+...
+Here are the documents to use: 
+
+Original Question Context:
+{original_question}
+
+---
+
+New Passage:
+{new_passage}
+"""
+
+    chat = ChatOpenAI(temperature=0.5, model_name="gpt-4o")
+    response = chat.invoke([HumanMessage(content=prompt)])
+
+    return response.content
+
 
 def revise_question(documents: list, failed_question_data: Dict[str, str], minimal_passages_used: List[Tuple[str, str]],
                     naturalness_details: Dict) -> str:
@@ -241,6 +312,7 @@ The required passages were from the documents titled:
 1.  The NEW question must be phrased such that if any single document ({num_docs} total) is removed, the question cannot be fully answered.
 2.  Ensure the NEW question forces a strong, sequential bridge (improving the Logical Dependency score).
 3.  The output format must be strictly adhered to.
+4.  The new question should be a revision and should not deviate too much from the original question.
 
 Use the following format exactly for your new attempt:
 Question: [Your NEW, revised question here]
@@ -250,3 +322,4 @@ Answer: [The ground truth answer to your question]
     chat = ChatOpenAI(temperature=0.7, model_name="gpt-4o")
     response = chat.invoke([HumanMessage(content=prompt)])
     return response.content
+

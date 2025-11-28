@@ -522,7 +522,7 @@ def get_required_passages(question: str, answer: str, candidate_passages: List[T
     if not candidate_passages:
         return []
 
-    chat = ChatOpenAI(model_name="o4-mini", openai_api_key=os.getenv("OPENAI_API_KEY"))
+    chat = ChatOpenAI(model_name="gpt-4o-mini", openai_api_key=os.getenv("OPENAI_API_KEY"))
 
     # Create labeled passages and a map to retrieve them later
     passage_map = {}
