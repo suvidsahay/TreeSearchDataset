@@ -1,0 +1,7 @@
+wikipedia-api
+nltk
+rank-bm25
+langchain
+openai
+tqdm
+

@@ -1,0 +1,7 @@
+filtered_fever_with_preprocessed_wiki.jsonl
+reranked_output_5.jsonl
+iirc_to_fever-2.jsonl
+filtered_fever_with_wiki.jsonl
+filtered_fever_with_wiki_updated.jsonl
+converted_exfever_to_fever_with_wikitext.jsonl
+.env

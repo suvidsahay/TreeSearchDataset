@@ -1,13 +1,38 @@
 import os
-import re
+from typing import List, Optional
 from langchain_openai import ChatOpenAI
-from langchain_core.messages.human import HumanMessage, HumanMessageChunk
+from langchain_core.messages import HumanMessage
 
 def load_openai_key():
-    if not os.getenv("OPENAI_API_KEY"):
-        raise Exception("Set your OPENAI_API_KEY!")
+    """
+    Accept either:
+    - OPENAI_API_KEY (for OpenAI cloud), or
+    - OPENAI_BASE_URL (for vLLM OpenAI-compatible server; key can be dummy)
+    """
+    if not os.getenv("OPENAI_API_KEY") and not os.getenv("OPENAI_BASE_URL"):
+        raise Exception("Set OPENAI_API_KEY (OpenAI cloud) or OPENAI_BASE_URL (vLLM).")
 
-def generate_seed_questions(doc1, num_questions=3):
+def _get_chat(chat: Optional[object], temperature: float):
+    """
+    Use injected chat if provided; otherwise build a default ChatOpenAI
+    that works with OpenAI cloud or an OpenAI-compatible server (vLLM).
+    """
+    if chat is not None:
+        return chat
+
+    base_url = os.getenv("OPENAI_BASE_URL")
+    api_key = os.getenv("OPENAI_API_KEY") or ("dummy" if base_url else None)
+    if not api_key:
+        raise Exception("OPENAI_API_KEY missing and no OPENAI_BASE_URL set.")
+
+    return ChatOpenAI(
+        model=os.getenv("OPENAI_MODEL", "gpt-4o"),  # default; override with env or pass a chat
+        temperature=temperature,
+        base_url=base_url,  # e.g., http://localhost:8000/v1 for vLLM
+        api_key=api_key,
+    )
+
+def generate_seed_questions(doc1: str, num_questions: int = 3, chat: Optional[object] = None) -> str:
     prompt = f"""You are an expert at creating the first step of a multi-hop reasoning chain.
 Your task is to generate {num_questions} "seed" questions from the document provided.
 
@@ -36,16 +61,14 @@ Answer: [The ground truth answer to your question]
 ---
 """
 
-    # Using gpt-4o for the best quality generation
-    chat = ChatOpenAI(temperature=0.7, model_name="gpt-4o")
-    response = chat.invoke([HumanMessage(content=prompt)])
+    chat = _get_chat(chat, temperature=0.7)
+    resp = chat.invoke([HumanMessage(content=prompt)])
 
     print("\nGenerated Seed Questions, Explanations, and Ground Truth Answers:")
     print(f"Document 1 snippet: {doc1[:100]}...")
+    return getattr(resp, "content", str(resp))
 
-    return response.content
-
-def generate_questions(doc1, doc2, num_questions=3):
+def generate_questions(doc1: str, doc2: str, num_questions: int = 3, chat: Optional[object] = None) -> str:
     # This new prompt now requires the model to generate the ground truth answer as well.
     prompt = f"""You are given two documents.
 
@@ -109,18 +132,15 @@ Document 2:
 
 ---  """
 
-    # Using gpt-4o for the best quality generation
-    chat = ChatOpenAI(temperature=0.5, model_name="gpt-4o")
-    response = chat.invoke([HumanMessage(content=prompt)])
-    
+    chat = _get_chat(chat, temperature=0.7)
+    resp = chat.invoke([HumanMessage(content=prompt)])
+
     print("\nGenerated Questions, Explanations, and Ground Truth Answers:")
     print(f"Document 1 snippet: {doc1[:100]}...")
     print(f"Document 2 snippet: {doc2[:100]}...")
+    return getattr(resp, "content", str(resp))
 
-    return response.content
-
-
-def generate_multihop_questions(documents: list, num_questions=1): # Reduced default to 1 for quality
+def generate_multihop_questions(documents: List[str], num_questions: int = 1, chat: Optional[object] = None) -> str:
     """
     Generates multi-hop questions that require combining information from all provided passages.
     This function is generalized to handle n passages.
@@ -169,12 +189,10 @@ Here are the documents to use:
 {documents_section}
 ---
 """
-
-    chat = ChatOpenAI(temperature=0.7, model_name="gpt-4o")
-    response = chat.invoke([HumanMessage(content=prompt)])
+    chat = _get_chat(chat, temperature=0.7)
+    resp = chat.invoke([HumanMessage(content=prompt)])
 
     print(f"\nGenerated Questions from {num_docs} documents:")
     for i, doc in enumerate(documents):
         print(f"Document {i + 1} snippet: {doc[:100]}...")
-
-    return response.content
+    return getattr(resp, "content", str(resp))

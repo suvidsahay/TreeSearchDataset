@@ -1,19 +1,41 @@
-# verification3.py
-
-import json
-from langchain_openai import ChatOpenAI
-from langchain_core.messages.human import HumanMessage, HumanMessageChunk
-
 import os
-from typing import List, Tuple
+import json
+import itertools
+from typing import List, Tuple, Optional
 
-# --- HELPER FUNCTIONS ---
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage
 
-# prompt = f"""Based strictly on the 'Context' provided, answer the 'Question'.
-#You must synthesize information across sentences if necessary, but you **cannot** use any external knowledge or make assumptions not supported by the text.
-#If the answer cannot be confidently inferred from the text, you MUST respond with the exact phrase: "Not answerable from passages."""
+# =========================
+# Chat helper
+# =========================
+def _get_chat(chat_model: Optional[object] = None, temperature: float = 0.0):
+    """
+    Use injected chat if provided; otherwise build a default ChatOpenAI client
+    that works with OpenAI cloud or an OpenAI-compatible (vLLM) server.
 
-def _generate_answer_from_context(context, question, chat_model):
+    Env:
+      OPENAI_BASE_URL (e.g., http://localhost:8000/v1 for vLLM)
+      OPENAI_API_KEY  (dummy allowed when using OPENAI_BASE_URL)
+      OPENAI_MODEL    (default fallback model id; defaults to "gpt-4o")
+    """
+    if chat_model is not None:
+        return chat_model
+    base_url = os.getenv("OPENAI_BASE_URL")
+    api_key = os.getenv("OPENAI_API_KEY") or ("dummy" if base_url else None)
+    if not api_key:
+        raise Exception("OPENAI_API_KEY missing and no OPENAI_BASE_URL set.")
+    return ChatOpenAI(
+        model=os.getenv("OPENAI_MODEL", "gpt-4o"),
+        temperature=temperature,
+        base_url=base_url,
+        api_key=api_key,
+    )
+
+# =========================
+# Core helpers
+# =========================
+def _generate_answer_from_context(context: Optional[str], question: str, chat_model: Optional[object]):
     """A generic helper to generate an answer given a context and question."""
     if context:
         prompt = f"""Using ONLY the information from the provided 'Context', answer the 'Question'.
@@ -32,10 +54,11 @@ Question: {question}
 
 Answer:"""
 
-    response = chat_model.invoke([HumanMessage(content=prompt)])
-    return response.content
+    chat = _get_chat(chat_model, temperature=0.0)
+    resp = chat.invoke([HumanMessage(content=prompt)])
+    return getattr(resp, "content", str(resp))
 
-def evaluate_answer_objectivity(answer1, answer2, chat_model):
+def evaluate_answer_objectivity(answer1: str, answer2: str, chat_model: Optional[object]):
     """Asks the LLM to compare two answers for semantic similarity to score objectivity."""
     print("   - Evaluating answer objectivity...")
     eval_prompt = f"""You are an expert semantic evaluator. Your task is to compare two answers to the same question and score their similarity. A high similarity score suggests the question is objective and fact-based.
@@ -48,19 +71,18 @@ Evaluate their semantic similarity on a scale of 1 to 5 (1 = Very Dissimilar, 5 
 Respond ONLY with a valid JSON object in the format:
 {{"objectivity_score": <score_integer>, "objectivity_justification": "<brief justification>"}}
 """
-    response = chat_model.invoke([HumanMessage(content=eval_prompt)])
+    chat = _get_chat(chat_model, temperature=0.0)
+    resp = chat.invoke([HumanMessage(content=eval_prompt)])
     try:
-        json_start = response.content.find('{')
-        json_end = response.content.rfind('}') + 1
-        json_data = response.content[json_start:json_end]
-        return json.loads(json_data)
+        s, e = resp.content.find('{'), resp.content.rfind('}') + 1
+        return json.loads(resp.content[s:e])
     except Exception:
         return {"objectivity_score": None, "objectivity_justification": "Objectivity parsing error."}
 
-# --- CONSOLIDATED EVALUATION FUNCTIONS ---
-
-
-def evaluate_question_naturalness_dynamic(question: str, passages: List[str], chat_model):
+# =========================
+# Naturalness evaluators
+# =========================
+def evaluate_question_naturalness_dynamic(question: str, passages: List[str], chat_model: Optional[object]):
     """
     Asks an LLM to dynamically score a question's naturalness based on N passages.
     """
@@ -91,7 +113,7 @@ Now, evaluate the following question using the criteria above.
 
 Question: "{question}"
 
-Return your answer as a valid JSON object in this exact format, using the dynamic key names:
+Return your answer ONLY as a valid JSON object in this exact format, using the dynamic key names:
 {{
   "clear_single_question_score": <1-5>,
   "combines_passages_score": <1-5>,
@@ -103,7 +125,8 @@ Return your answer as a valid JSON object in this exact format, using the dynami
 }}
 """
 
-    response = chat_model.invoke([HumanMessage(content=eval_prompt)])
+    chat = _get_chat(chat_model, temperature=0.0)
+    response = chat.invoke([HumanMessage(content=eval_prompt)])
     try:
         json_start = response.content.find('{')
         json_end = response.content.rfind('}') + 1
@@ -119,13 +142,7 @@ Return your answer as a valid JSON object in this exact format, using the dynami
             "justification": "Evaluation parsing error."
         }
 
-
-
-
-
-
-
-def evaluate_question_naturalness(question, chat_model):
+def evaluate_question_naturalness(question: str, chat_model: Optional[object]):
     """Asks the LLM to score the question across 6 task-specific dimensions."""
     print("   - Evaluating question naturalness (multi-dimension)...")
 
@@ -232,15 +249,13 @@ Return your answer as a valid JSON object in this exact format:
 
 Question: "{question}" """
 
-    response = chat_model.invoke([HumanMessage(content=eval_prompt)])
-
+    chat = _get_chat(chat_model, temperature=0.0)
+    resp = chat.invoke([HumanMessage(content=eval_prompt)])
     try:
-        json_start = response.content.find('{')
-        json_end = response.content.rfind('}') + 1
-        json_data = response.content[json_start:json_end]
-        return json.loads(json_data)
+        s, e = resp.content.find('{'), resp.content.rfind('}') + 1
+        return json.loads(resp.content[s:e])
     except Exception:
-       return {
+        return {
             "clear_single_question_score": None,
             "combines_passages_score": None,
             "requires_both_score": None,
@@ -250,7 +265,10 @@ Question: "{question}" """
             "justification": "Evaluation parsing error."
         }
 
-def verify_question_v3(documents, question, ground_truth_answer):
+# =========================
+# Verifiers
+# =========================
+def verify_question_v3(documents: List[str], question: str, ground_truth_answer: str, chat_model: Optional[object] = None):
     """
     Verifies question necessity and evaluates answer objectivity.
     """
@@ -307,14 +325,14 @@ Your JSON response (e.g., {{"Correct_2_passage": true, "Correct_A_passage": fals
         print(f"CRITICAL PARSING ERROR in verification3: {e}")
         return {"answer": f"Comparison Parsing Error: {final_response.content}"}
 
-def verify_question_3docs(documents, question, ground_truth_answer):
+def verify_question_3docs(documents: List[str], question: str, ground_truth_answer: str, chat_model: Optional[object] = None):
     if len(documents) != 3:
         raise ValueError("Expected exactly 3 documents.")
 
     doc_A = documents[0]
     doc_B = documents[1]
     doc_C = documents[2]
-    chat = ChatOpenAI(temperature=0, model_name="gpt-4o-mini", openai_api_key=os.getenv("OPENAI_API_KEY"))
+    chat = _get_chat(chat_model, temperature=0.0)
 
     answer_A = _generate_answer_from_context(doc_A, question, chat)
     answer_B = _generate_answer_from_context(doc_B, question, chat)
@@ -385,7 +403,7 @@ Your response (e.g., "Correct_C_passage"):
         print(f"CRITICAL PARSING ERROR in verification3: {e}")
         return {"answer": f"Comparison Parsing Error: {final_response.content}"}
 
-def verify_question_N_docs(passages: List[str], question: str, ground_truth_answer: str) -> dict:
+def verify_question_N_docs(passages: List[str], question: str, ground_truth_answer: str, chat_model: Optional[object] = None) -> dict:
   """Verifies if a question is answerable using subsets of the provided N passages."""
   if not passages:
     return {"verification_error": "No passages provided"}
@@ -410,7 +428,8 @@ def verify_question_N_docs(passages: List[str], question: str, ground_truth_answ
   Analysis Tasks:
   {chr(10).join(subset_prompts)}
   """
-  response = chat_for_eval.invoke(prompt)
+#   response = chat_for_eval.invoke(prompt)
+  response = chat_model.invoke([HumanMessage(content=prompt)])
   results = response.content.strip().split('\n')
   verification_details = {f"answerable_with_{prompt}": "yes" in res.lower() for prompt, res in
               zip(subset_prompts, results) if res}
@@ -427,7 +446,7 @@ def verify_question_N_docs(passages: List[str], question: str, ground_truth_answ
   return final_verdict
 
 
-def verify_question_final(documents: list[str], question: str, ground_truth_answer: str) -> dict:
+def verify_question_final(documents: List[str], question: str, ground_truth_answer: str, chat_model: Optional[object] = None) -> dict:
     """
     Verifies a question by generating answers from individual documents, all documents combined,
     and general knowledge, then asks an LLM to determine which context is sufficient.
@@ -436,9 +455,10 @@ def verify_question_final(documents: list[str], question: str, ground_truth_answ
     # ... (Paste your full verify_question_final function here) ...
     if not documents:
         raise ValueError("The documents list cannot be empty.")
+    chat = _get_chat(chat_model, temperature=0.0)
 
     num_docs = len(documents)
-    chat = ChatOpenAI(temperature=0, model_name="gpt-4o-mini", openai_api_key=os.getenv("OPENAI_API_KEY"))
+    # chat = ChatOpenAI(temperature=0, model_name="gpt-4o-mini", openai_api_key=os.getenv("OPENAI_API_KEY"))
 
     # --- 1. Generate answers from all sources ---
     generated_answers = {}
@@ -512,14 +532,14 @@ def verify_question_final(documents: list[str], question: str, ground_truth_answ
         return {"error": f"Comparison Parsing Error: {e}"}
 
 
-def get_required_passages(question: str, answer: str, candidate_passages: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
+def get_required_passages(question: str, answer: str, candidate_passages: List[Tuple[str, str]], chat_model: Optional[object] = None) -> List[Tuple[str, str]]:
     """
     Directly asks an LLM to identify the minimal set of passages required to answer a question.
     """
     if not candidate_passages:
         return []
 
-    chat = ChatOpenAI(model_name="o4-mini", openai_api_key=os.getenv("OPENAI_API_KEY"))
+    chat = _get_chat(chat_model, temperature=0.0)
 
     # Create labeled passages and a map to retrieve them later
     passage_map = {}
