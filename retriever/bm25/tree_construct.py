@@ -7,42 +7,39 @@ from dataclasses import dataclass, field
 from typing import List, Tuple, Set, Dict
 from itertools import islice
 
-# --- External Library Imports ---
 from tqdm import tqdm
 from elasticsearch import Elasticsearch, ConnectionError
 from langchain_openai import ChatOpenAI
 from langchain_core.messages.human import HumanMessage
 from sentence_transformers import CrossEncoder
 
-# --- Local Module Imports ---
-# Assuming 'r.py' contains your retriever functions
-from r import (
+from retriever import (
     retrieve_best_passage,
     fetch_wikipedia_page,
     get_doc_score_from_passages,
     llm_select_next_passage_with_score
 )
-# Assuming 'qg1.py' contains your updated generation prompts
-from qg2 import (
+
+from question_generation import (
     load_openai_key,
     generate_seed_questions,
     generate_multihop_questions,
     revise_question,
     generate_simplified_question
 )
-# Assuming 'v1_cur.py' contains your updated verification logic
-from v2 import (
+
+from verification3 import (
     evaluate_question_naturalness_dynamic,
     get_required_passages,
     verify_question_N_docs,
     verify_question_phase2
 )
-# Assuming 'visualization.py' contains your updated graph logic
-from visualization1 import HistoryNode, QUESTION_ID_COUNTER, generate_output, PrettyPrinter
+
+from visualization import HistoryNode, QUESTION_ID_COUNTER, generate_output, PrettyPrinter
 
 pp = PrettyPrinter()
 
-# --- Configuration ---
+# Configuration
 load_openai_key()
 FILE1 = "filtered_fever_with_wiki_updated.jsonl"
 FILE2 = "reranked_output_5.jsonl"
