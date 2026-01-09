@@ -1,36 +1,16 @@
-import os
 import json
 import itertools
 from typing import List, Tuple, Optional
 
-from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage
 
 # =========================
 # Chat helper
 # =========================
-def _get_chat(chat_model: Optional[object] = None, temperature: float = 0.0):
-    """
-    Use injected chat if provided; otherwise build a default ChatOpenAI client
-    that works with OpenAI cloud or an OpenAI-compatible (vLLM) server.
-
-    Env:
-      OPENAI_BASE_URL (e.g., http://localhost:8000/v1 for vLLM)
-      OPENAI_API_KEY  (dummy allowed when using OPENAI_BASE_URL)
-      OPENAI_MODEL    (default fallback model id; defaults to "gpt-4o")
-    """
-    if chat_model is not None:
-        return chat_model
-    base_url = os.getenv("OPENAI_BASE_URL")
-    api_key = os.getenv("OPENAI_API_KEY") or ("dummy" if base_url else None)
-    if not api_key:
-        raise Exception("OPENAI_API_KEY missing and no OPENAI_BASE_URL set.")
-    return ChatOpenAI(
-        model=os.getenv("OPENAI_MODEL", "gpt-4o"),
-        temperature=temperature,
-        base_url=base_url,
-        api_key=api_key,
-    )
+def _get_chat(chat_model: Optional[object] = None):
+    if chat_model is None:
+        raise RuntimeError("VERIFICATION/EVALUATION LLM must be injected (chat_model is None).")
+    return chat_model
 
 # =========================
 # Core helpers
@@ -54,7 +34,7 @@ Question: {question}
 
 Answer:"""
 
-    chat = _get_chat(chat_model, temperature=0.0)
+    chat = _get_chat(chat_model)
     resp = chat.invoke([HumanMessage(content=prompt)])
     return getattr(resp, "content", str(resp))
 
@@ -71,7 +51,7 @@ Evaluate their semantic similarity on a scale of 1 to 5 (1 = Very Dissimilar, 5 
 Respond ONLY with a valid JSON object in the format:
 {{"objectivity_score": <score_integer>, "objectivity_justification": "<brief justification>"}}
 """
-    chat = _get_chat(chat_model, temperature=0.0)
+    chat = _get_chat(chat_model)
     resp = chat.invoke([HumanMessage(content=eval_prompt)])
     try:
         s, e = resp.content.find('{'), resp.content.rfind('}') + 1
@@ -125,7 +105,7 @@ Return your answer ONLY as a valid JSON object in this exact format, using the d
 }}
 """
 
-    chat = _get_chat(chat_model, temperature=0.0)
+    chat = _get_chat(chat_model)
     response = chat.invoke([HumanMessage(content=eval_prompt)])
     try:
         json_start = response.content.find('{')
@@ -249,7 +229,7 @@ Return your answer as a valid JSON object in this exact format:
 
 Question: "{question}" """
 
-    chat = _get_chat(chat_model, temperature=0.0)
+    chat = _get_chat(chat_model)
     resp = chat.invoke([HumanMessage(content=eval_prompt)])
     try:
         s, e = resp.content.find('{'), resp.content.rfind('}') + 1
@@ -275,7 +255,7 @@ def verify_question_v3(documents: List[str], question: str, ground_truth_answer:
     # ... (The rest of this function remains exactly the same as before) ...
     doc_A = documents[0]
     doc_B = documents[1]
-    chat = ChatOpenAI(temperature=0, model_name="gpt-4o", openai_api_key=os.getenv("OPENAI_API_KEY"))
+    chat = _get_chat(chat_model)
 
     answer_A = _generate_answer_from_context(doc_A, question, chat)
     answer_B = _generate_answer_from_context(doc_B, question, chat)
@@ -332,7 +312,7 @@ def verify_question_3docs(documents: List[str], question: str, ground_truth_answ
     doc_A = documents[0]
     doc_B = documents[1]
     doc_C = documents[2]
-    chat = _get_chat(chat_model, temperature=0.0)
+    chat = _get_chat(chat_model)
 
     answer_A = _generate_answer_from_context(doc_A, question, chat)
     answer_B = _generate_answer_from_context(doc_B, question, chat)
@@ -348,9 +328,9 @@ def verify_question_3docs(documents: List[str], question: str, ground_truth_answ
     comparison_prompt = f"""You are an expert evaluator. Your task is to determine which context produces the answer closest to the 'Ground Truth Answer' with the following priority: 
 1. Answer A (from Passage A only), 
 2. Answer B (from Passage B only), 
-2. Answer C (from Passage C only), 
-3. Answer All (from All passages), 
-4. Answer None (from general knowledge).
+3. Answer C (from Passage C only), 
+4. Answer All (from All passages), 
+5. Answer None (from general knowledge).
 
 Question: "{question}"
 
@@ -361,9 +341,9 @@ Ground Truth Answer:
 Generated Answers to Compare:
 1. Answer A (from Passage A only): "{answer_A}"
 2. Answer B (from Passage B only): "{answer_B}"
-2. Answer C (from Passage C only): "{answer_B}"
-3. Answer All (from All passages): "{answer_all}"
-4. Answer None (from general knowledge): "{answer_none}"
+3. Answer C (from Passage C only): "{answer_C}"
+4. Answer All (from All passages): "{answer_all}"
+5. Answer None (from general knowledge): "{answer_none}"
 ---
 
 Analyze the answers and return a single string indicating which context was sufficient to produce the closest match to the Ground Truth Answer. 
@@ -408,6 +388,7 @@ def verify_question_N_docs(passages: List[str], question: str, ground_truth_answ
   if not passages:
     return {"verification_error": "No passages provided"}
 
+  chat = _get_chat(chat_model)
   passage_labels = [f"Passage_{i + 1}" for i in range(len(passages))]
   passage_text = "\n\n".join([f"{label}: \"{text}\"" for label, text in zip(passage_labels, passages)])
   num_passages = len(passages)
@@ -428,8 +409,8 @@ def verify_question_N_docs(passages: List[str], question: str, ground_truth_answ
   Analysis Tasks:
   {chr(10).join(subset_prompts)}
   """
-#   response = chat_for_eval.invoke(prompt)
-  response = chat_model.invoke([HumanMessage(content=prompt)])
+
+  response = chat.invoke([HumanMessage(content=prompt)])
   results = response.content.strip().split('\n')
   verification_details = {f"answerable_with_{prompt}": "yes" in res.lower() for prompt, res in
               zip(subset_prompts, results) if res}
@@ -445,20 +426,18 @@ def verify_question_N_docs(passages: List[str], question: str, ground_truth_answ
   }
   return final_verdict
 
-
 def verify_question_final(documents: List[str], question: str, ground_truth_answer: str, chat_model: Optional[object] = None) -> dict:
     """
     Verifies a question by generating answers from individual documents, all documents combined,
     and general knowledge, then asks an LLM to determine which context is sufficient.
     (This is the function you provided).
     """
-    # ... (Paste your full verify_question_final function here) ...
+
     if not documents:
         raise ValueError("The documents list cannot be empty.")
-    chat = _get_chat(chat_model, temperature=0.0)
+    chat = _get_chat(chat_model)
 
     num_docs = len(documents)
-    # chat = ChatOpenAI(temperature=0, model_name="gpt-4o-mini", openai_api_key=os.getenv("OPENAI_API_KEY"))
 
     # --- 1. Generate answers from all sources ---
     generated_answers = {}
@@ -527,6 +506,8 @@ def verify_question_final(documents: List[str], question: str, ground_truth_answ
         else:
             result["Correct_no_passage"] = True
         # ... (add other generated answers and details if needed) ...
+        # result["generated_answers"] = generated_answers
+        # result.update(objectivity_details)
         return result
     except Exception as e:
         return {"error": f"Comparison Parsing Error: {e}"}
@@ -539,7 +520,7 @@ def get_required_passages(question: str, answer: str, candidate_passages: List[T
     if not candidate_passages:
         return []
 
-    chat = _get_chat(chat_model, temperature=0.0)
+    chat = _get_chat(chat_model)
 
     # Create labeled passages and a map to retrieve them later
     passage_map = {}
@@ -578,10 +559,10 @@ Your response must contain *only* the labels (e.g., "A, C") or the word "None".
 """
 
     # Call the LLM and parse the response
-    response = chat.invoke(prompt)
+    response = chat.invoke([HumanMessage(content=prompt)])
     response_text = response.content.strip()
 
-    # Build the final list of passages based on the LLM's response
+   # Build the final list of passages based on the LLM's response
     required_passages = []
     if response_text.upper() != 'NONE':
         required_labels = [label.strip() for label in response_text.split(',')]

@@ -1,5 +1,6 @@
 import wikipediaapi
 import nltk
+from typing import List, Tuple, Optional
 from nltk.tokenize import sent_tokenize
 from rank_bm25 import BM25Okapi
 from sentence_transformers import SentenceTransformer
@@ -7,8 +8,8 @@ from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
 from sentence_transformers.cross_encoder import CrossEncoder
 import json
-from typing import List, Tuple
 from dataclasses import dataclass, field
+from langchain_core.messages import HumanMessage
 
 cross_encoder = CrossEncoder('cross-encoder/ms-marco-MiniLM-L6-v2')
 
@@ -19,8 +20,13 @@ print("Model loaded.")
 # This line is only needed once. If it's already downloaded, this does nothing.
 try:
     nltk.data.find('tokenizers/punkt')
-except nltk.downloader.DownloadError:
+except LookupError:
     nltk.download('punkt')
+
+try:
+    nltk.data.find("tokenizers/punkt_tab")
+except LookupError:
+    nltk.download("punkt_tab")
 
 wiki_wiki = wikipediaapi.Wikipedia(user_agent="multi_hop_agent", language="en")
 
@@ -180,7 +186,7 @@ class QuestionState:
     passages_used: List[Tuple[str, str]] = field(default_factory=list)  # List of (title, text)
 
 
-def llm_select_next_passage_with_score(current_state: QuestionState, remaining_passages: List[Tuple[str, str]], chat_model) -> Tuple[float, Tuple[str, str]]:
+def llm_select_next_passage_with_score(current_state: QuestionState, remaining_passages: List[Tuple[str, str]], chat_model) -> Tuple[float, Optional[Tuple[str, str]]]:
     """
     Asks an LLM to choose the best next passage for expansion and rate its confidence.
 
@@ -226,7 +232,8 @@ def llm_select_next_passage_with_score(current_state: QuestionState, remaining_p
     }}
     '''
 
-    response = chat_model.invoke(prompt)
+    # response = chat_model.invoke(prompt)
+    response = chat_model.invoke([HumanMessage(content=prompt)])
     print(response.content)
 
     # --- ROBUST JSON PARSING ---

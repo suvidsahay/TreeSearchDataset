@@ -1,0 +1,44 @@
+# Bible config — no CLI args, no overrides elsewhere.
+
+llm:
+  # 3 knobs (separate), but each is still “one fixed choice” once set here.
+  generation:
+    alias: gemma
+    temperature: 0.7
+
+  verification:
+    alias: gemma
+    temperature: 0.0
+
+  evaluation:
+    alias: gemma
+    temperature: 0.0
+
+providers:
+  # OpenAI cloud (direct API)
+  gpt4o:
+    provider: openai
+    model: gpt-4o
+  gpt5:
+    provider: openai
+    model: gpt-5
+
+  # Anthropic cloud (direct API)
+  claude:
+    provider: anthropic
+    model: claude-3-5-haiku-latest
+
+  # Open-source via vLLM (OpenAI-compatible server)
+  llama:
+    provider: vllm
+    model: meta-llama/Llama-3.1-8B-Instruct
+  gemma:
+    provider: vllm
+    model: google/gemma-3-4b-it
+
+vllm:
+  base_url: http://localhost:8001/v1
+  # If a vLLM model is selected and server is down -> hard fail at startup.
+  require_reachable: true
+  # Optional request timeout (seconds) for the reachability check.
+  timeout_sec: 3
