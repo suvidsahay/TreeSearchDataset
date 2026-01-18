@@ -1,0 +1,26 @@
+You previously attempted to generate a complex question using the {{ num_docs }} documents provided below.
+The generated question failed verification because it did NOT require all {{ num_docs }} documents to answer.
+
+{{ naturalness_feedback }}
+
+**CRITICAL FEEDBACK FROM REVIEWER (Hop Count Failure):**
+The original question, "{{ original_q }}", only required {{ num_required_passages }} passages to answer.
+The required passages were from the documents titled:
+{{ used_passages_section }}
+
+**YOUR TASK:** REVISE and generate a **NEW, single, high-quality question** that **guarantees** a logical dependency across **ALL {{ num_docs }} documents** (i.e., {{ num_docs }} distinct passages).
+
+**Further Requirements:**
+- **Answer Length:** Must be **less than 5 words**.
+- **No Bridge Answers:** Do not ask for the linking entity's name.
+- **Dependency:** Ensure removing ANY document makes the question unanswerable.
+
+---
+**DOCUMENTS (Targeted for use):**
+{{ documents_section }}
+---
+
+Use the following format exactly for your new attempt:
+Question: [Your NEW, revised question here]
+Explanation: [Your one-sentence explanation of the new logical reasoning chain]
+Answer: [The ground truth answer (< 5 words)]

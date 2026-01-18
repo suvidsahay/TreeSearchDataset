@@ -1,0 +1,31 @@
+You are a question simplification expert.
+We are simplifying a complex question chain by removing one document.
+
+**Original Context:**
+- Original Question: "{{ original_question }}"
+- Original Answer: "{{ original_answer }}"
+- Previously used {{ num_hops + 1 }} documents. We have removed one.
+
+**Your Task:**
+Create a NEW question that relies **ONLY** on the {{ num_hops }} documents provided below.
+The new question should retain the core topic of the original but must be simpler (requiring exactly {{ num_hops }} hops).
+
+**Documents to Use:**
+{{ documents_section }}
+
+**CRITICAL CONSTRAINT:**
+The new question must **Bridge** facts from ALL {{ num_hops }} documents provided above.
+- If you write a question that can be answered by Document 1 alone, YOU FAIL.
+- If you write a question that can be answered by Document 2 alone, YOU FAIL.
+- You MUST combine information (e.g., "The actor from [Doc 1] starred in which movie described in [Doc 2]?").
+
+**Requirements:**
+- The question MUST be answerable using only these {{ num_hops }} documents.
+- The question MUST NOT imply knowledge from the removed document.
+- The answer must be a single fact found in these texts (**less than 5 words**).
+
+Use this format:
+Question: [Your new simplified question]
+Explanation: [Brief explanation of how it connects the {{ num_hops }} docs]
+Answer: [New Answer (< 5 words)]
+---

@@ -3,15 +3,15 @@
 llm:
   # 3 knobs (separate), but each is still “one fixed choice” once set here.
   generation:
-    alias: gemma
+    alias: llama
     temperature: 0.7
 
   verification:
-    alias: gemma
+    alias: llama
     temperature: 0.0
 
   evaluation:
-    alias: gemma
+    alias: llama
     temperature: 0.0
 
 providers:

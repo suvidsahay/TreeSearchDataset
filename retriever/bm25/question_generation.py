@@ -1,123 +1,41 @@
 from typing import List, Optional, Dict, Tuple
 from langchain_core.messages import HumanMessage
 import os
+from prompt_loader import render_prompt
 
 def generate_seed_questions(doc1: str, num_questions: int = 3, chat: Optional[object] = None) -> str:
-    prompt = f"""You are an expert at creating the first step of a multi-hop reasoning chain.
-Your task is to generate {num_questions} "seed" questions from the document provided.
-
-A good "seed" question identifies a key entity, event, or concept from the document that can serve as a logical **"hook"** to connect to information in other, unknown documents. Avoid questions that are too specific or self-contained.
-
-**Good Seed Question Example:**
-- Document Excerpt: "...he played Jaime Lannister in the HBO series Game of Thrones..."
-- Good Question: "What major television series, known for its fantasy elements, featured Nikolaj Coster-Waldau in a prominent role?"
-- Why it's good: The answer, "Game of Thrones," is a major entity that can easily link to other articles about HBO, other actors, or the fantasy genre.
-
-**Bad Seed Question Example:**
-- Document Excerpt: "...Coster-Waldau was born in Rudkøbing, Denmark..."
-- Bad Question: "In what Danish town was Coster-Waldau born?"
-- Why it's bad: The answer, "Rudkøbing," is too specific and unlikely to be a bridge to other diverse topics.
-
-Here is the document to use:
----
-Document 1:
-{doc1}
----
-
-For each question you generate, you MUST provide the question, a brief explanation of the "hook" entity, and the ground truth answer. Use the following format exactly and separate each question explanation answer by \"---\":
-Question: [Your question here]
-Explanation: [Identify the key entity in your question that can link to other topics.]
-Answer: [The ground truth answer to your question]
----
-"""
-
+    prompt = render_prompt(
+    "question_generation/generate_seed_questions.j2",
+    num_questions=num_questions,
+    doc1=doc1,
+    )
     if chat is None:
         raise RuntimeError("GENERATION LLM must be injected")
 
-    resp = chat.invoke([HumanMessage(content=prompt)])
+    response = chat.invoke([HumanMessage(content=prompt)])
 
-    print("\nGenerated Seed Questions, Explanations, and Ground Truth Answers:")
-    print(f"Document 1 snippet: {doc1[:100]}...")
-    return getattr(resp, "content", str(resp))
+    # print("\nGenerated Seed Questions, Explanations, and Ground Truth Answers:")
+    return response.content
 
 def generate_questions(doc1: str, doc2: str, num_questions: int = 3, chat: Optional[object] = None) -> str:
-    # This new prompt now requires the model to generate the ground truth answer as well.
-    prompt = f"""You are given two documents.
-
-Your task is to generate {num_questions} clear, natural-sounding, fact-based questions that require combining information from BOTH Document 1 and Document 2 to answer.
-
-Requirements:
-· The question must not be answerable by reading only one document.
-· The question must not be unanswerable.
-· The question must not be a yes/no question.
-· The answer must be a single, objective fact (e.g., a name, number, date, or location) explicitly stated in the documents.
-· The question must sound natural, as if written by a human.
-
-Critical Test: Before generating each question, you must verify internally:
-1. What fact comes only from Document 1.
-2. What fact comes only from Document 2.
-3. Why both are required to answer. If the answer can still be found without using a unique fact from one of the documents, revise your question.
-
-Example of a GOOD question: Document 1: Paris is the capital of France. Document 2: The Eiffel Tower was completed in 1889. Question: Which famous landmark in the capital of France was completed in 1889?
-
-Examples of BAD questions:
-· What is the capital of France? (answerable from one document)
-· In the year of 1889 completion, what is the landmark that located inside Paris capital of France? (unnatural phrasing)
-· Is the Eiffel Tower located in Paris? (yes/no question)
-
-Important:
-· Do not mention or imply where each fact comes from.
-· Do not assume any relationship between facts unless it is explicitly stated.
-· Ensure that named entities are referred to clearly and unambiguously.
-
-For each question you generate, you MUST provide three things:
-1.  The question itself.
-2.  A brief, one-sentence explanation of the bridge connecting the two documents.
-3.  The ground truth answer to the question, synthesized ONLY from the provided documents.
-Use the following format exactly, with "---" as a separator between questions:
-Question: [Your question here]
-Explanation: [Your one-sentence explanation here]
-Answer: [The ground truth answer to your question]
----
-
-Question: [Your next question here]
-
-Explanation: [Your next explanation here]
-
-Answer: [The ground truth answer to your next question]
-
----
-
-...
-
-
-Here are the documents to use:
----
-
-Document 1:
-{doc1}
-
----
-
-Document 2:
-{doc2}
-
----  """
+    # Kept for compatibility, but updated constraints just in case
+    prompt = render_prompt(
+    "question_generation/generate_questions.j2",
+    num_questions=num_questions,
+    doc1=doc1,
+    doc2=doc2,
+    )
 
     if chat is None:
         raise RuntimeError("GENERATION LLM must be injected")
 
-    resp = chat.invoke([HumanMessage(content=prompt)])
-
-    print("\nGenerated Questions, Explanations, and Ground Truth Answers:")
-    print(f"Document 1 snippet: {doc1[:100]}...")
-    print(f"Document 2 snippet: {doc2[:100]}...")
-    return getattr(resp, "content", str(resp))
+    response = chat.invoke([HumanMessage(content=prompt)])
+    return response.content
 
 def generate_multihop_questions(documents: List[str], num_questions: int = 3, chat: Optional[object] = None) -> str:
     """
     Generates multi-hop questions that require combining information from all provided passages.
-    This function is generalized to handle n passages.
+    Enforces strict < 5 word answers and reasoning chains.
     """
     num_docs = len(documents)
     if num_docs < 2:
@@ -129,129 +47,73 @@ def generate_multihop_questions(documents: List[str], num_questions: int = 3, ch
         formatted_docs.append(f"Document {i + 1}:\n{doc}")
     documents_section = "\n\n---\n\n".join(formatted_docs)
 
-    prompt = f"""You are an expert at creating complex reasoning questions that require a logical bridge between facts.
-You are given {num_docs} documents. Your task is to generate {num_questions} clear, fact-based questions that require a **true reasoning chain** across all {num_docs} documents.
-
-**CRITICAL REQUIREMENT: The question must form a single, coherent thought.** It must NOT be two separate questions stitched together with "and". The facts must be logically dependent on each other.
-
-**Good Question Example (Logical Bridge):**
-- Doc 1: "Nikolaj Coster-Waldau starred in the 2011 film Headhunters."
-- Doc 2: "The Fox Network was the most-watched network in the 2007-08 season. Nikolaj Coster-Waldau starred in the Fox series 'New Amsterdam'."
-- GOOD Question: "Which television network, the most-watched in the U.S. during the 2007-08 season, aired a series starring an actor from the 2011 film Headhunters?"
-- Why it's good: You must use the fact from Doc 1 (the film) to identify the actor, then use that actor's name to find the network in Doc 2, and finally link that network to the "most-watched" fact. This is a true reasoning chain.
-
-**Bad Question Example (Simple Mashup):**
-- BAD Question: "What film did Nikolaj Coster-Waldau star in in 2011, and which network was the most-watched in 2007-08?"
-- Why it's bad: This is just two unrelated questions. There is no logical dependency. DO NOT generate questions like this.
-
----
-**Further Requirements:**
-- The final answer must be a single, objective fact (e.g., a name, number, date).
-- The question must not be a yes/no question.
-- A unique fact must be required from EACH document.
-
-For each question you generate, you MUST provide the question, a brief explanation of the logical bridge, and the ground truth answer.
-
-Use the following format exactly:
-Question: [Your question here]
-Explanation: [Your one-sentence explanation of the logical reasoning chain]
-Answer: [The ground truth answer to your question]
---- (Use this to split '---' each question, explanation, answer triplet in between)
----
-
-Here are the documents to use:
----
-{documents_section}
----
-"""
+    prompt = render_prompt(
+    "question_generation/generate_multihop_questions.j2",
+    num_docs=num_docs,
+    num_questions=num_questions,
+    documents_section=documents_section,
+    )
 
     if chat is None:
         raise RuntimeError("GENERATION LLM must be injected")
 
-    resp = chat.invoke([HumanMessage(content=prompt)])
+    response = chat.invoke([HumanMessage(content=prompt)])
+    return response.content
 
-    print(f"\nGenerated Questions from {num_docs} documents:")
-    for i, doc in enumerate(documents):
-        print(f"Document {i + 1} snippet: {doc[:100]}...")
-    
-    # return resp.content
-    return getattr(resp, "content", str(resp))
-
-def revise_question(
-    documents: list,
-    failed_question_data: Dict[str, str],
-    minimal_passages_used: List[Tuple[str, str]],
-    naturalness_details: Dict,
-    chat: Optional[object] = None
-) -> str:
+def revise_question(documents: list, failed_question_data: Dict[str, str], minimal_passages_used: List[Tuple[str, str]], naturalness_details: Dict, chat: Optional[object] = None) -> str:
     """
-    Refines a previously generated question that failed to increase hop complexity.
-
-    Args:
-        documents (list): The list of all passage texts (all_passage_tuples) that were available for the question.
-        failed_question_data (Dict[str, str]): The question, explanation, and answer of the failed attempt.
-        minimal_passages_used (List[Tuple[str, str]]): The list of passages (title, text) that were ACTUALLY required by the verification step.
-        naturalness_details (Dict): The quality scores (e.g., logical dependency) from the previous question attempt.
+    Revises a question that failed verification (because it didn't use all docs).
     """
     num_docs = len(documents)
     formatted_docs = [f"Document {i + 1}:\n{doc}" for i, doc in enumerate(documents)]
     documents_section = "\n\n---\n\n".join(formatted_docs)
 
-    # Information about the failed question
     original_q = failed_question_data.get("question", "N/A")
-    original_e = failed_question_data.get("explanation", "N/A")
-
-    # Information about the minimal passages actually used for the prompt feedback
     used_titles = [title for title, _ in minimal_passages_used]
     used_passages_section = "\n".join([f"- '{title}'" for title in used_titles])
-
-    # Extract Naturalness Scores for targeted feedback
     ld_score = naturalness_details.get("logical_dependency_score", "N/A")
     combines_score = naturalness_details.get("combines_passages_score", "N/A")
 
-    naturalness_feedback = f"""
-**PREVIOUS ATTEMPT QUALITY SCORES (Out of 5.0):**
-- Logical Dependency Score: {ld_score}
-- Combines Passages Score: {combines_score}
-
-**ANALYSIS:** Since your score for 'Combines Passages' was low and the question only used {len(minimal_passages_used)} passages, the logical chain was weak.
+    naturalness_feedback = f""" 
+    **PREVIOUS ATTEMPT QUALITY SCORES (Out of 5.0):**
+    - Logical Dependency Score: {ld_score}
+    - Combines Passages Score: {combines_score}
 """
 
-    prompt = f"""You previously attempted to generate a complex question using the {num_docs} documents provided below.
-The generated question failed verification because it did NOT require all {num_docs} documents to answer.
-
-{naturalness_feedback}
-
-**CRITICAL FEEDBACK FROM REVIEWER (Hop Count Failure):**
-The original question, "{original_q}", only required {len(minimal_passages_used)} passages to answer.
-The required passages were from the documents titled:
-{used_passages_section}
-
-**YOUR TASK:** REVISE and generate a **NEW, single, high-quality question** that **guarantees** a logical dependency across **ALL {num_docs} documents** (i.e., {num_docs} distinct passages).
-
-**Further Requirements:**
-- The final answer must be a single, objective fact (e.g., a name, number, date).
-- The question must not be a yes/no question.
-- A unique fact must be required from EACH document.
-
----
-**DOCUMENTS (Targeted for use):**
-{documents_section}
----
-
-**CRITICAL INSTRUCTIONS FOR REVISION:**
-1.  The NEW question must be phrased such that if any single document ({num_docs} total) is removed, the question cannot be fully answered.
-2.  Ensure the NEW question forces a strong, sequential bridge (improving the Logical Dependency score).
-3.  The output format must be strictly adhered to.
-
-Use the following format exactly for your new attempt:
-Question: [Your NEW, revised question here]
-Explanation: [Your one-sentence explanation of the new logical reasoning chain]
-Answer: [The ground truth answer to your question]
-"""
+    prompt = render_prompt(
+        "question_generation/revise_question.j2",
+        num_docs=num_docs,
+        naturalness_feedback=naturalness_feedback.strip(),
+        original_q=original_q,
+        num_required_passages=len(minimal_passages_used),
+        used_passages_section=used_passages_section,
+        documents_section=documents_section,
+    )
     if chat is None:
         raise RuntimeError("GENERATION LLM must be injected")
 
-    resp = chat.invoke([HumanMessage(content=prompt)])
+    response = chat.invoke([HumanMessage(content=prompt)])
+    return response.content
 
-    return getattr(resp, "content", str(resp))
+def generate_simplified_question(original_question: str, original_answer: str, kept_passages: List[str], num_hops: int, chat: Optional[object] = None) -> str:
+    """
+    Generates a simpler question using only the kept passages (Top-Down Phase 2).
+    Includes strong constraints to prevent 1-hop generation (lazy simplification).
+    """
+    formatted_docs = []
+    for i, doc in enumerate(kept_passages):
+        formatted_docs.append(f"Document {i + 1}:\n{doc}")
+    documents_section = "\n\n---\n\n".join(formatted_docs)
+
+    prompt = render_prompt(
+    "question_generation/generate_simplified_question.j2",
+    original_question=original_question,
+    original_answer=original_answer,
+    num_hops=num_hops,
+    documents_section=documents_section
+    )
+    if chat is None:
+        raise RuntimeError("GENERATION LLM must be injected")
+
+    response = chat.invoke([HumanMessage(content=prompt)])
+    return response.content

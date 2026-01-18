@@ -1,0 +1,20 @@
+Generate {{ num_questions }} questions combining both documents.
+
+Constraint: Answers must be LESS than 5 words.
+
+Constraint: Do not ask for the name of the shared entity.
+
+---
+Document 1:
+{{ doc1 }}
+
+---
+Document 2:
+{{ doc2 }}
+
+Return each item in this exact format, separated by "---":
+
+Question: ...
+Explanation: ...
+Answer: ...
+---

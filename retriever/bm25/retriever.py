@@ -1,5 +1,6 @@
 import wikipediaapi
 import nltk
+import time
 from typing import List, Tuple, Optional
 from nltk.tokenize import sent_tokenize
 from rank_bm25 import BM25Okapi
@@ -28,12 +29,30 @@ try:
 except LookupError:
     nltk.download("punkt_tab")
 
-wiki_wiki = wikipediaapi.Wikipedia(user_agent="multi_hop_agent", language="en")
+# wiki_wiki = wikipediaapi.Wikipedia(user_agent="multi_hop_agent", language="en")
+wiki_wiki = wikipediaapi.Wikipedia(
+    language="en",
+    user_agent="TreeSearchDataset/1.0 (research; contact: vgudi@umass.edu)"
+)
 
-def fetch_wikipedia_page(title):
-    """Fetches the full text of a Wikipedia page."""
-    page = wiki_wiki.page(title)
-    return page.text if page.exists() else None
+
+# def fetch_wikipedia_page(title):
+#     """Fetches the full text of a Wikipedia page."""
+#     page = wiki_wiki.page(title)
+#     return page.text if page.exists() else None
+
+def fetch_wikipedia_page(title: str, retries: int = 3):
+    for attempt in range(retries):
+        try:
+            page = wiki_wiki.page(title)
+            if not page.exists():
+                return None
+            return page.text
+        except Exception as e:
+            if attempt == retries - 1:
+                # print(f"[Wikipedia] fetch failed for '{title}': {e}")
+                return None
+            time.sleep(1.5 * (attempt + 1))
 
 def split_into_passages(text, target_word_count=250, overlap_sentences=2):
     """

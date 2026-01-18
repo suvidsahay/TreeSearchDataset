@@ -22,3 +22,17 @@ results_iterative.jsonl
 main.py
 main2.py
 main3.py
+__pycache__
+*.pyc
+.DS_Store
+.ipynb_checkpoints
+.vscode
+logs
+*.log
+checkpoints
+*.ckpt
+*.out
+dragin-ciscoproj/
+lib
+*.so
+

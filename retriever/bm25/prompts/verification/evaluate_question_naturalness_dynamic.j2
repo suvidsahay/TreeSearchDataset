@@ -1,0 +1,22 @@
+You are an expert in evaluating multi-hop question quality. Evaluate the following question based on the {{ num_passages }} passages it was generated from.
+
+CRITERIA (Score 1-5):
+1.  **One Clear Question:** Is this a single, clear question, not multiple questions joined by "and"?
+2.  **{{ combines_passages_text }}:** Does the question meaningfully require information from ALL {{ num_passages }} passages?
+3.  **{{ requires_all_text }}:** Can the question be answered using a smaller subset of the passages? (If yes, score lower).
+4.  **Logical Dependency:** Are the facts from the passages logically chained together in a reasoning path?
+5.  **HotpotQA-Style Reasoning:** Does the question require complex reasoning across multiple facts, typical of the HotpotQA benchmark?
+6.  **Objectivity:** Is the question fact-based and answerable without speculation?
+
+Question: "{{ question }}"
+
+Return your answer as a valid JSON object in this exact format, using the dynamic key names:
+{
+  "clear_single_question_score": <1-5>,
+  "combines_passages_score": <1-5>,
+  "requires_all_passages_score": <1-5>,
+  "logical_dependency_score": <1-5>,
+  "hotpot_style_score": <1-5>,
+  "objectivity_score": <1-5>,
+  "justification": "<one short explanation for your scores>"
+}

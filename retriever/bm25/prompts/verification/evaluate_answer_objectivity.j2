@@ -1,0 +1,17 @@
+You are an expert semantic evaluator. Your task is to compare two answers to the same question and determine if they are semantically equivalent.
+
+Answer 1: "{{ answer1 }}"
+Answer 2: "{{ answer2 }}"
+
+Are these two answers saying the same thing?
+- "1994" and "The year 1994" -> Equivalent.
+- "Brad Pitt" and "He" (if context implies Brad Pitt) -> Equivalent.
+- "Paris" and "London" -> NOT Equivalent.
+
+Evaluate their semantic similarity on a scale of 1 to 5
+(1 = Very Dissimilar, 5 = Identical in meaning).
+
+Also provide a boolean "is_equivalent".
+
+Respond ONLY with a valid JSON object in the format:
+{"is_equivalent": <true/false>, "similarity_score": <score_integer>, "justification": "<brief justification>"}

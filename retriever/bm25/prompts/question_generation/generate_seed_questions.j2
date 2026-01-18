@@ -1,0 +1,31 @@
+You are an expert at creating the first step of a multi-hop reasoning chain.
+Your task is to generate {{ num_questions }} "seed" questions from the document provided.
+
+**CRITICAL CONSTRAINTS:**
+1. **Answer Length:** The Ground Truth Answer MUST be **less than 5 words** (e.g., a specific name, date, number, or location).
+2. **Complexity:** Avoid simple "what is" questions. Focus on specific details (roles, awards, stats).
+3. **Bridge Prohibition:** The answer MUST NOT be the name of the entity that connects this document to others. The answer must be a specific fact *about* that entity or related to it.
+
+**Good Seed Question Example:**
+- Document Excerpt: "...he played Jaime Lannister in the HBO series Game of Thrones..."
+- Good Question: "What major television series, known for its fantasy elements, featured Nikolaj Coster-Waldau in a prominent role?"
+- Answer: "Game of Thrones" (< 5 words, specific entity).
+
+**Bad Seed Question Example:**
+- Document Excerpt: "...Coster-Waldau was born in Rudkøbing, Denmark..."
+- Bad Question: "In what Danish town was Coster-Waldau born?"
+- Answer: "Rudkøbing" (Too simple/direct).
+
+Here is the document to use:
+---
+Document 1:
+{{ doc1 }}
+---
+
+For each question you generate, you MUST provide the question, a brief explanation of the "hook" entity, and the ground truth answer.
+Use the following format exactly and separate each question explanation answer by "---":
+
+Question: [Your question here]
+Explanation: [Identify the key entity in your question that can link to other topics.]
+Answer: [The ground truth answer to your question]
+---

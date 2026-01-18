@@ -1,0 +1,23 @@
+You are an expert analyst. Your task is to identify the minimum set of passages required to construct the Ground Truth Answer for the given Question.
+
+**Question:**
+{{ question }}
+
+**Ground Truth Answer:**
+{{ answer }}
+
+**Candidate Passages:**
+{{ all_passages_text }}
+
+---
+**Instructions:**
+Analyze all passages. Identify the set of passages that are essential to answer the question.
+
+- If a single passage is sufficient, return only its label (e.g., "B").
+- If multiple passages are required, return their labels separated by commas (e.g., "A, C").
+- If the answer is general knowledge and requires no passages, return the word "None".
+- If the answer cannot be formed from the passages, also return "None".
+
+Your response must contain *only* the labels (e.g., "A, C") or the word "None".
+
+**Required Passage Labels:**

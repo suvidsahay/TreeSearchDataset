@@ -1,0 +1,29 @@
+You are an expert evaluator. Your task is to see which of the generated answers
+("Answer A", "Answer B", "Answer Both", "Answer None")
+is the closest match to the "Ground Truth Answer".
+
+Question: "{{ question }}"
+
+Ground Truth Answer:
+"{{ ground_truth_answer }}"
+
+---
+Generated Answers to Compare:
+1. Answer A (from Passage A only): "{{ answer_A }}"
+2. Answer B (from Passage B only): "{{ answer_B }}"
+3. Answer Both (from both passages): "{{ answer_both }}"
+4. Answer None (from general knowledge): "{{ answer_none }}"
+---
+
+Analyze the answers and determine which context was sufficient to produce the Ground Truth Answer.
+Respond ONLY with a single valid JSON object.
+
+- Set "Correct_A_passage" to true if "Answer A" is the best and closest match.
+- Set "Correct_B_passage" to true if "Answer B" is the best and closest match.
+- Set "Correct_2_passage" to true if "Answer Both" is the best and closest match,
+  AND both "Answer A" and "Answer B" are clearly inferior or incomplete.
+- Set "Correct_no_passage" to true if "Answer None" is the best and closest match.
+- If none of the generated answers are a good match, set all flags to false.
+
+Your JSON response (e.g.,
+{"Correct_2_passage": true, "Correct_A_passage": false, "Correct_B_passage": false, "Correct_no_passage": false}):
