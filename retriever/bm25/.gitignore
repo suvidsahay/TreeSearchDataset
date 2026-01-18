@@ -35,4 +35,5 @@ checkpoints
 dragin-ciscoproj/
 lib
 *.so
-
+__pycache__/
+*.pyc
